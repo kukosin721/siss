@@ -309,10 +309,11 @@ internal fun FullScreenSettingsScreen(
                                 Text("Signal path to the DAC", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Cream)
                                 Spacer(Modifier.height(4.dp))
                                 Text(
-                                    "Five paths with their own semantics. Every mode except Disabled plays " +
-                                        "through the Oboe engine; the exclusive ones add a hard requirement and " +
-                                        "bit-perfect only exists with a DAC: the built-in speaker always goes " +
-                                        "through the phone's DSP and amplifier.",
+                                    "Five paths with their own semantics. Oboe is disabled by default while " +
+                                        "its audio problems are fixed: every mode except Disabled plays through " +
+                                        "it, the exclusive ones add a hard requirement, and bit-perfect only " +
+                                        "exists with a DAC: the built-in speaker always goes through the " +
+                                        "phone's DSP and amplifier.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = CreamMuted,
                                 )
@@ -396,7 +397,7 @@ internal fun FullScreenSettingsScreen(
                                 if (!output.isDac) {
                                     Text(
                                         "No DAC detected: exclusive output modes stay locked until a DAC is connected. " +
-                                            "Playback keeps going through the Oboe engine in Automatic mode.",
+                                            "Playback stays on the Android mixer because Oboe is disabled by default.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = Color(0xFFFFB26B),
                                     )

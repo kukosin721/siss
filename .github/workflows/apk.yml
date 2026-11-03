@@ -1,0 +1,103 @@
+name: APK
+
+# Compila el APK de debug en un runner de GitHub (el sandbox de desarrollo no tiene
+# JDK ni SDK de Android). El resultado se publica en la rama `ci-apk` porque los
+# artefactos de Actions no siempre se pueden descargar desde el sandbox; con la rama
+# alcanza un `git fetch` para bajar el APK y el log de compilación.
+#
+#   rama ci-apk:
+#     app-debug.apk      → APK instalable (solo si el build salió bien)
+#     status.txt         → OK / FAILED + ruta y tamaño
+#     build.log          → cola del log de Gradle (para ver el error exacto)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["arena/**"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: assembleDebug
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Gradle cache
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Componentes del SDK
+        run: |
+          set -x
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKMANAGER" ] || SDKMANAGER="$(command -v sdkmanager)"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          # Platform/build-tools/NDK/CMake que falten los resuelve AGP; acá adelantamos
+          # los que casi siempre hacen falta para no depender de la descarga implícita.
+          for pkg in "platform-tools" "cmake;3.22.1"; do
+            "$SDKMANAGER" --install "$pkg" > /dev/null 2>&1 || true
+          done
+          "$SDKMANAGER" --list_installed || true
+
+      - name: Build
+        id: build
+        continue-on-error: true
+        run: |
+          chmod +x gradlew
+          # El gradle.properties del repo está afinado para el sandbox de 2 GB; en el
+          # runner damos memoria de verdad para que Kotlin/AGP no se queden cortos.
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
+          org.gradle.workers.max=4
+          org.gradle.parallel=true
+          org.gradle.caching=true
+          org.gradle.configuration-cache=false
+          kotlin.daemon.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m
+          android.builder.sdkDownload=true
+          EOF
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee build.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Publicar en la rama ci-apk
+        if: always()
+        run: |
+          set -e
+          out=/tmp/pub
+          rm -rf "$out" && mkdir -p "$out" && cd "$out"
+          git init -q
+          git checkout -q --orphan ci-apk
+          apk="$(find "$GITHUB_WORKSPACE/app/build/outputs/apk" -name '*.apk' 2>/dev/null | head -1 || true)"
+          if [ "${{ steps.build.outcome }}" = "success" ] && [ -n "$apk" ] && [ -f "$apk" ]; then
+            cp "$apk" app-debug.apk
+            printf 'OK\ncommit=%s\nfile=app-debug.apk\nsize=%s\n' "$GITHUB_SHA" "$(stat -c%s app-debug.apk)" > status.txt
+          else
+            printf 'FAILED\ncommit=%s\noutcome=%s\n' "$GITHUB_SHA" "${{ steps.build.outcome }}" > status.txt
+          fi
+          tail -c 600000 "$GITHUB_WORKSPACE/build.log" > build.log 2>/dev/null || true
+          git add -A
+          git -c user.name="apk-bot" -c user.email="apk-bot@users.noreply.github.com" \
+              commit -q -m "APK $(cat status.txt | head -1) ${GITHUB_SHA}" || true
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" HEAD:ci-apk
+
+      - name: Resumen
+        if: always()
+        run: |
+          echo "### APK" >> "$GITHUB_STEP_SUMMARY"
+          echo "- resultado: ${{ steps.build.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          ls -l app/build/outputs/apk/debug 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || true

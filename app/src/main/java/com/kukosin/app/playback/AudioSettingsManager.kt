@@ -7,17 +7,21 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Ajustes de audio. Ya no hay "driver", ni rate objetivo, ni formato PCM: el motor
- * siempre abre el DAC con el formato exacto del archivo. Lo único configurable es la
- * política (estricto o con fallback) y el tamaño de buffer.
+ * Ajustes de audio: modo de salida, política del motor (estricto o con fallback),
+ * buffer, fundidos y algunos extras de la cola.
+ *
+ * Oboe está **desactivado por defecto** por ahora (ver [AudioConfig.outputMode]): el
+ * camino estable es el mezclador de Android. Los modos de Oboe siguen disponibles en
+ * Ajustes para cuando se repare su problema de audio.
  */
 data class AudioConfig(
     /**
-     * Camino de salida. Por defecto [OutputMode.AUTO]: todo se reproduce por el motor
-     * de Oboe en la mejor salida disponible. El mezclador queda como salida de
-     * emergencia manual.
+     * Camino de salida. Por defecto [OutputMode.DISABLED]: AudioTrack / mezclador de
+     * Android, **sin Oboe**. Oboe queda disponible en Ajustes para probarlo, pero no se
+     * usa solo: en varios dispositivos está dando problemas de audio y se va a reparar
+     * aparte. Cuando eso pase, el default vuelve a [OutputMode.AUTO].
      */
-    val outputMode: OutputMode = OutputMode.AUTO,
+    val outputMode: OutputMode = OutputMode.DISABLED,
     /**
      * Si está activo, el motor NUNCA convierte: o abre exacto, o falla y avisa.
      * Apagado (recomendado), intenta bit-perfect primero y sólo si el DAC no lo
@@ -68,6 +72,16 @@ data class AudioConfig(
 object AudioSettingsManager {
     private const val PREFS_NAME = "kukosin_audio_settings_v2"
 
+    /**
+     * Marca de la migración que apaga Oboe una sola vez.
+     *
+     * No alcanza con cambiar el valor por defecto de la clave: una instalación que ya
+     * tenía guardado `AUTO` (u otro modo de Oboe) lo seguiría usando. Al primer arranque
+     * con esta versión se fuerza el mezclador de Android; si después el usuario elige
+     * Oboe a mano en Ajustes, esa elección se respeta en los arranques siguientes.
+     */
+    private const val KEY_OBOE_OFF_MIGRATION = "oboe_off_by_default_v1"
+
     private var prefs: SharedPreferences? = null
     private val state = MutableStateFlow(AudioConfig())
     val configState: StateFlow<AudioConfig> = state.asStateFlow()
@@ -81,11 +95,17 @@ object AudioSettingsManager {
 
     private fun load() {
         val p = prefs ?: return
+        if (!p.getBoolean(KEY_OBOE_OFF_MIGRATION, false)) {
+            // Oboe apagado de entrada (temporalmente): el audio sale por el mezclador
+            // de Android, que es el camino estable. Se hace una sola vez para no pisar
+            // al usuario que después lo vuelva a activar desde Ajustes.
+            p.edit()
+                .putString("output_mode_v4", OutputMode.DISABLED.name)
+                .putBoolean(KEY_OBOE_OFF_MIGRATION, true)
+                .apply()
+        }
         state.value = AudioConfig(
-            // Clave nueva: el motor de Oboe pasa a ser el camino por defecto. Las
-            // instalaciones viejas que habían quedado en "Disabled" (clave v3) también
-            // migran acá, que es lo que se busca: priorizar Oboe al reproducir.
-            outputMode = OutputMode.fromName(p.getString("output_mode_v4", OutputMode.AUTO.name)),
+            outputMode = OutputMode.fromName(p.getString("output_mode_v4", OutputMode.DISABLED.name)),
             strictBitPerfect = p.getBoolean("strict_bit_perfect", false),
             bufferMs = p.getInt(
                 "buffer_ms",

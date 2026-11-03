@@ -19,11 +19,13 @@ import androidx.compose.ui.unit.dp
  * Con cada pantalla definiendo su propio `tween(220)` o `spring(stiffness = …)`, la app
  * terminaba con una docena de movimientos distintos que se sentían "pegados": un cambio de
  * pantalla entraba con una curva, la carátula con otra y el deslizador con una tercera.
- * Acá hay tres curvas con un criterio:
+ * Acá hay cuatro curvas con un criterio:
  *
  *  - [Emphasized]: para lo que **cambia de contenido** (carátula, título, pantalla). Entra
  *    rápido y desacelera al final, que es lo que el ojo lee como "peso".
  *  - [Standard]: para lo que **aparece o desaparece** (hojas, barras, avisos).
+ *  - [sheetEasing]: para el **vuelo de la carátula** al abrir/cerrar el reproductor.
+ *    Más larga que [emphasized] en la entrada, para que el movimiento se pueda seguir.
  *  - [SpringSnappy]: para lo que responde **al dedo** (deslizador, chips, botones). Un
  *    resorte con amortiguación alta: sin rebote visible, pero sin el corte seco del tween.
  *
@@ -50,6 +52,24 @@ object Motion {
     const val ARTWORK_MS = 420
 
     /**
+     * Recorrido completo del reproductor: la carátula crece desde la fila tocada (o el
+     * dock) hasta su slot, y el contenido aparece detrás. No es instantáneo a propósito:
+     * el ojo tiene que poder seguir la portada. Al cerrar es un poco más corto porque el
+     * gesto ya indica la dirección.
+     */
+    const val SHEET_OPEN_MS = 520
+    const val SHEET_CLOSE_MS = 440
+
+    /**
+     * Curva del viaje de la carátula.
+     *
+     * Arranca con calma (para que el toque no se sienta como un salto) y frena largo al
+     * llegar. Es más suave que [emphasized] en la entrada, que es la que hacía que la
+     * apertura se leyera como un corte cuando el resorte era muy rígido.
+     */
+    val sheetEasing: Easing = CubicBezierEasing(0.18f, 0f, 0.10f, 1f)
+
+    /**
      * Aparición de un ítem de lista o tarjeta.
      *
      * Más corta que [ENTER_MS] a propósito: cuando entran 12 elementos escalonados, cada
@@ -69,6 +89,15 @@ object Motion {
 
     fun <T> quick(durationMillis: Int = QUICK_MS) =
         tween<T>(durationMillis = durationMillis, easing = standard)
+
+    /**
+     * Viaje del reproductor para toques y botones: duración fija y curva suave.
+     * Un fling del dedo usa [snappy] en su lugar para conservar la velocidad.
+     */
+    fun <T> sheetTravel(open: Boolean) = tween<T>(
+        durationMillis = if (open) SHEET_OPEN_MS else SHEET_CLOSE_MS,
+        easing = sheetEasing,
+    )
 
     /** Resorte de respuesta al dedo: rápido, sin rebote perceptible. */
     fun <T> snappy(

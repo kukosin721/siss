@@ -15,10 +15,11 @@ package com.kukosin.app.playback
  * Ningún modo deja el volumen "fijo al 100 %": si el DAC no expone su atenuador, el
  * volumen se aplica en el motor (y se informa que la ruta deja de ser bit-exacta).
  *
- * [AUTO] is the default: playback always goes through the Oboe engine, which opens
- * the output at the track's native sample rate and bit depth and falls back to a
- * shared stream (or to its own polyphase conversion) only when the hardware cannot
- * take the exact format. The three exclusive modes add a hard requirement on top.
+ * [DISABLED] is the current default: Oboe is temporarily off while its audio problems
+ * are fixed, so playback goes through the Android mixer (AudioTrack). [AUTO] and the
+ * three exclusive modes remain selectable in Settings for testing; AUTO opens the
+ * output through the Oboe engine at the track's native sample rate and bit depth and
+ * falls back to a shared stream only when the hardware cannot take the exact format.
  */
 enum class OutputMode(
     val label: String,
@@ -30,8 +31,8 @@ enum class OutputMode(
         shortLabel = "Oboe",
         description = "Always plays through the Oboe engine on the best output available " +
             "(USB DAC, line out, headphones or speaker). It opens each track at its native " +
-            "sample rate and bit depth and only converts when the hardware cannot take it, " +
-            "so audio never fails. The highest fidelity that works on every device.",
+            "sample rate and bit depth and only converts when the hardware cannot take it. " +
+            "Highest fidelity, but Oboe is not the default right now: it is being fixed.",
     ),
     USB_DAC(
         label = "USB DAC",
@@ -55,9 +56,9 @@ enum class OutputMode(
     DISABLED(
         label = "Disabled · Android mixer",
         shortLabel = "Mixer",
-        description = "Escape hatch: goes through the Android mixer (AudioTrack) instead " +
-            "of Oboe. Maximum compatibility, but the system may resample or apply effects. " +
-            "Not bit-perfect.",
+        description = "Default for now: goes through the Android mixer (AudioTrack) instead " +
+            "of Oboe, which is temporarily off while its audio problems are fixed. Maximum " +
+            "compatibility, but the system may resample or apply effects. Not bit-perfect.",
     ),
     ;
 
@@ -108,7 +109,8 @@ enum class OutputMode(
         val entriesInOrder: List<OutputMode> =
             listOf(AUTO, USB_DAC, DIRECT_DRIVER, AAUDIO_EXCLUSIVE, DISABLED)
 
+        /** Un nombre desconocido (o una preferencia vacía) cae en el modo seguro: sin Oboe. */
         fun fromName(name: String?): OutputMode =
-            entries.firstOrNull { it.name == name } ?: AUTO
+            entries.firstOrNull { it.name == name } ?: DISABLED
     }
 }

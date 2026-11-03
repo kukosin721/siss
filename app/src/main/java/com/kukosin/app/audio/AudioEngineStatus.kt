@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 data class AudioStatus(
     val info: EngineInfo = EngineInfo(),
     val deviceName: String = "—",
-    val mode: OutputMode = OutputMode.AUTO,
+    val mode: OutputMode = OutputMode.DISABLED,
     /** Un altavoz interno nunca puede ser bit-perfect: tiene su propio DSP y amplificador. */
     val builtinSpeaker: Boolean = false,
     val message: String? = null,
@@ -53,7 +53,7 @@ object AudioEngineStatus {
     private var deviceName: String = "—"
 
     @Volatile
-    private var mode: OutputMode = OutputMode.AUTO
+    private var mode: OutputMode = OutputMode.DISABLED
 
     @Volatile
     private var builtinSpeaker: Boolean = false

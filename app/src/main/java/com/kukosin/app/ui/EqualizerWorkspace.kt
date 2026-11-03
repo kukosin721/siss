@@ -46,6 +46,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -161,7 +162,10 @@ internal fun EqualizerWorkspace(
                             color = Gold,
                         )
                         Text(
-                            "10 bands · constant Q · 64-bit · ${activeProfile.label}",
+                            buildString {
+                                append("10 bands · constant Q · 64-bit · ${activeProfile.label}")
+                                if (!settings.enabled) append(" · bypass")
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = CreamMuted,
                         )
@@ -243,6 +247,11 @@ private fun EqCurveCard(
     val labelStyle = TextStyle(color = CreamMuted, fontSize = 9.sp)
     val gridColor = Cream.copy(alpha = 0.07f)
     val dim = if (settings.enabled) 1f else 0.45f
+    // Los gestos viven en un `pointerInput` que no se reinicia con cada cambio de
+    // ganancia (a propósito): si leyeran `settings` directo, después de cambiar el tipo
+    // o la frecuencia de una banda seguirían viendo el estado viejo. `rememberUpdatedState`
+    // les da siempre el último.
+    val latestSettings by rememberUpdatedState(settings)
     val curveAlpha by animateFloatAsState(
         targetValue = dim,
         animationSpec = Motion.leave(),
@@ -261,7 +270,7 @@ private fun EqCurveCard(
                     .height(228.dp)
                     .pointerInput(settings.bands.size) {
                         detectTapGestures { offset ->
-                            val hit = nearestBand(offset.x, size.width.toFloat(), settings)
+                            val hit = nearestBand(offset.x, size.width.toFloat(), latestSettings)
                             if (hit >= 0) onSelectBand(hit)
                         }
                     }
@@ -269,15 +278,15 @@ private fun EqCurveCard(
                         var active = -1
                         detectDragGestures(
                             onDragStart = { offset ->
-                                active = nearestBand(offset.x, size.width.toFloat(), settings)
+                                active = nearestBand(offset.x, size.width.toFloat(), latestSettings)
                                 if (active >= 0) onSelectBand(active)
-                                if (active >= 0) {
+                                if (active >= 0 && latestSettings.bands.getOrNull(active)?.isGainBand == true) {
                                     val g = gainForY(offset.y, size.height.toFloat())
                                     EqManager.setBandGain(active, g)
                                 }
                             },
                             onDrag = { change, _ ->
-                                if (active >= 0) {
+                                if (active >= 0 && latestSettings.bands.getOrNull(active)?.isGainBand == true) {
                                     change.consume()
                                     val g = gainForY(change.position.y, size.height.toFloat())
                                     EqManager.setBandGain(active, g)
@@ -369,11 +378,20 @@ private fun EqCurveCard(
                     // Nodos de banda.
                     settings.bands.forEachIndexed { index, band ->
                         val x = xOf(band.freqHz)
-                        val y = yOf(band.gainDb.coerceIn(-DISPLAY_DB, DISPLAY_DB))
+                        // En una banda de ganancia el nodo marca el dB elegido. En un
+                        // filtro de corte (notch/pasa-altos/pasa-bajos) la ganancia no
+                        // existe: el nodo se dibuja sobre la respuesta real del filtro
+                        // en su frecuencia, que es lo que de verdad lo representa.
+                        val nodeDb = if (band.isGainBand) {
+                            band.gainDb
+                        } else {
+                            BiquadDesign.responseDb(settings, band.freqHz.toDouble(), CURVE_SAMPLE_RATE).toFloat()
+                        }
+                        val y = yOf(nodeDb.coerceIn(-DISPLAY_DB, DISPLAY_DB))
                         val selected = index == selectedBand
                         val radius = if (selected) 8f else 5f
                         drawCircle(
-                            color = if (band.gainDb != 0f) Gold.copy(alpha = curveAlpha) else CreamMuted.copy(alpha = 0.7f),
+                            color = if (!band.isGainBand || band.gainDb != 0f) Gold.copy(alpha = curveAlpha) else CreamMuted.copy(alpha = 0.7f),
                             radius = radius,
                             center = Offset(x, y),
                         )
@@ -524,30 +542,63 @@ private fun BandEditor(
                     )
                 }
                 Text(
-                    formatGain(band.gainDb),
+                    if (band.isGainBand) formatGain(band.gainDb) else band.type.label,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = Gold,
+                    maxLines = 1,
                 )
             }
 
             Spacer(Modifier.height(4.dp))
-            EqSlider(
-                value = band.gainDb,
-                min = -EqSettings.MAX_GAIN_DB,
-                max = EqSettings.MAX_GAIN_DB,
-                label = "Gain",
-                onChange = { EqManager.setBandGain(index, it) },
-            )
 
-            Text(
-                if (showAdvanced) "Hide frequency and Q" else "Band frequency and Q",
-                style = MaterialTheme.typography.labelSmall,
-                color = Gold,
-                modifier = Modifier
-                    .clickable { onToggleAdvanced() }
-                    .padding(vertical = 6.dp),
-            )
+            // Las bandas de corte (notch / pasa-bajos / pasa-altos) no tienen ganancia:
+            // actúan siempre. Mostrarles un slider de dB que no hace nada era una de las
+            // partes "de maqueta" que quedaban en esta pantalla.
+            if (band.isGainBand) {
+                EqSlider(
+                    value = band.gainDb,
+                    min = -EqSettings.MAX_GAIN_DB,
+                    max = EqSettings.MAX_GAIN_DB,
+                    label = "Gain",
+                    onChange = { EqManager.setBandGain(index, it) },
+                )
+            } else {
+                Text(
+                    when (band.type) {
+                        EqBandType.NOTCH -> "Notch: removes a narrow band around ${freqLabel(band.freqHz)}."
+                        EqBandType.LOW_PASS -> "Low pass: keeps everything below ${freqLabel(band.freqHz)}."
+                        EqBandType.HIGH_PASS -> "High pass: keeps everything above ${freqLabel(band.freqHz)}."
+                        else -> "This filter cuts frequencies; gain does not apply."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = CreamMuted,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (showAdvanced) "Hide frequency, Q and filter type" else "Frequency, Q and filter type",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Gold,
+                    modifier = Modifier
+                        .clickable { onToggleAdvanced() }
+                        .padding(vertical = 6.dp),
+                )
+                Text(
+                    "Reset band",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CreamMuted,
+                    modifier = Modifier
+                        .clickable { EqManager.resetBand(index) }
+                        .padding(vertical = 6.dp),
+                )
+            }
 
             if (showAdvanced) {
                 BandTypeSelector(
@@ -561,7 +612,9 @@ private fun BandEditor(
                     label = "Frequency ${freqLabel(band.freqHz)}",
                     onChange = { EqManager.setBandFrequency(index, 10f.pow(it)) },
                 )
-                if (band.type == EqBandType.PEAK) {
+                // Los shelves usan una pendiente fija; las campanas y los cortes sí
+                // tienen Q (ancho de la campana / pendiente del filtro).
+                if (band.type != EqBandType.LOW_SHELF && band.type != EqBandType.HIGH_SHELF) {
                     EqSlider(
                         value = log2(band.q),
                         min = log2(EqSettings.MIN_Q),
@@ -749,8 +802,8 @@ private fun InfoCard(settings: EqSettings) {
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "Each band is a constant-Q bell (or a shelf at the ends), " +
-                    "so boosting +3 dB does not widen the filter.",
+                "Each band is a bell, a shelf, or a cut filter (notch / low pass / " +
+                    "high pass). Q stays constant, so boosting +3 dB does not widen the bell.",
                 style = MaterialTheme.typography.labelSmall,
                 color = CreamMuted,
             )
@@ -809,10 +862,16 @@ private fun gainForY(y: Float, height: Float): Float {
  */
 @Composable
 private fun BandTypeSelector(current: EqBandType, onSelect: (EqBandType) -> Unit) {
+    // Los seis tipos que el motor DSP ya soporta (RBJ): shelves en las puntas,
+    // campana, notch y pasa-bajos/pasa-altos. Antes la pantalla sólo ofrecía tres y
+    // los otros tres eran inalcanzables aunque el motor los implementaba.
     val options = listOf(
         EqBandType.LOW_SHELF to "Low shelf",
         EqBandType.PEAK to "Bell",
         EqBandType.HIGH_SHELF to "High shelf",
+        EqBandType.NOTCH to "Notch",
+        EqBandType.LOW_PASS to "Low pass",
+        EqBandType.HIGH_PASS to "High pass",
     )
     Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
         Text(
@@ -821,8 +880,9 @@ private fun BandTypeSelector(current: EqBandType, onSelect: (EqBandType) -> Unit
             color = CreamMuted,
         )
         Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            options.forEach { (type, label) ->
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(options) { option ->
+                val (type, label) = option
                 val selected = type == current
                 Text(
                     label,

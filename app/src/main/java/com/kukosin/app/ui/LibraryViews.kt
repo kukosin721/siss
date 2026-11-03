@@ -144,6 +144,7 @@ import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalDensity
@@ -427,12 +428,18 @@ internal fun YtmTrackRow(
     isPlaying: Boolean,
     onClick: () -> Unit,
 ) {
+    val pressOrigin = LocalTrackPressOrigin.current
+    var artworkBounds by remember { mutableStateOf(Rect.Zero) }
+    val open = {
+        if (artworkBounds != Rect.Zero) pressOrigin?.publish(artworkBounds)
+        onClick()
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
             .background(InkSoft)
-            .clickable(onClick = onClick)
+            .clickable(onClick = open)
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -440,7 +447,8 @@ internal fun YtmTrackRow(
             modifier = Modifier
                 .size(54.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(InkElevated),
+                .background(InkElevated)
+                .onGloballyPositioned { artworkBounds = it.boundsInRoot() },
             contentAlignment = Alignment.Center,
         ) {
             Icon(Icons.Rounded.Cloud, contentDescription = null, tint = CreamMuted)
@@ -482,7 +490,7 @@ internal fun YtmTrackRow(
                 )
             }
         }
-        IconButton(onClick = onClick) {
+        IconButton(onClick = open) {
             Icon(
                 if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                 contentDescription = if (isPlaying) "Pause" else "Play",
@@ -715,6 +723,11 @@ internal fun TrackRow(
         label = "artworkDragAlpha",
     )
 
+    // Al tocar la fila, la carátula grande del reproductor nace exactamente en esta
+    // miniatura y crece hasta su slot. El rectángulo se mide en coordenadas de la raíz.
+    val pressOrigin = LocalTrackPressOrigin.current
+    var artworkBounds by remember { mutableStateOf(Rect.Zero) }
+
     // "Show in library" desde el reproductor: la fila se enciende en dorado un
     // par de segundos para que la encuentres de un vistazo.
     val highlightAlpha by animateFloatAsState(
@@ -755,7 +768,10 @@ internal fun TrackRow(
                     .clickable(
                         interactionSource = rowInteraction,
                         indication = LocalIndication.current,
-                        onClick = onClick,
+                        onClick = {
+                            if (artworkBounds != Rect.Zero) pressOrigin?.publish(artworkBounds)
+                            onClick()
+                        },
                     )
                     .padding(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -764,6 +780,7 @@ internal fun TrackRow(
                     modifier = Modifier
                         .size(72.dp)
                         .clip(RoundedCornerShape(14.dp))
+                        .onGloballyPositioned { artworkBounds = it.boundsInRoot() }
                         .graphicsLayer { alpha = artworkAlpha }
                         .pointerInput(track.uri.toString()) {
                             detectDragGestures(

@@ -148,7 +148,7 @@ internal enum class AppSection {
  * Es una sola pieza (un "segmented control"): los iconos van unidos dentro del mismo
  * contenedor y separados por divisores finos, sin texto. Antes cada acceso era una
  * tarjeta con etiqueta de dos líneas, que ocupaba 64 dp y competía visualmente con la
- * onda; ahora la barra mide 54 dp, se lee de un vistazo y deja respirar al reproductor.
+ * onda; ahora la barra mide 50 dp, se lee de un vistazo y deja respirar al reproductor.
  */
 @Composable
 internal fun PlayerShortcutBar(
@@ -168,7 +168,7 @@ internal fun PlayerShortcutBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(54.dp),
+                .height(50.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             ShortcutIconButton(

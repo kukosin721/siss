@@ -26,7 +26,9 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -40,6 +42,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.animate
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.material.icons.Icons
@@ -107,6 +110,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -351,14 +355,15 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     val audioConfig by viewModel.audioConfig.collectAsStateWithLifecycle()
     val uiSettings by UiSettingsManager.settings.collectAsStateWithLifecycle()
     val routeReady by AudioRoute.isReady.collectAsStateWithLifecycle()
-    // Sin DAC conectado los modos exclusivos quedan bloqueados; si había uno guardado
-    // se vuelve al modo automático de Oboe (no al mezclador): la reproducción sigue
-    // pasando por el motor, sólo pierde la exclusividad.
+    // Sin DAC conectado los modos exclusivos quedan bloqueados. Como Oboe está apagado
+    // por defecto mientras se arreglan sus problemas de audio, el respaldo tampoco es
+    // AUTO: se vuelve al mezclador de Android (DISABLED). Si el usuario había elegido
+    // Oboe a mano, ese modo no "requiere DAC" y se respeta.
     // Se espera a que AudioRoute haya leído los dispositivos reales; si no, el
     // valor inicial (sin DAC) borraría el modo de un DAC recién conectado.
     LaunchedEffect(output.isDac, routeReady) {
         if (routeReady && !output.isDac && audioConfig.outputMode.requiresDac) {
-            viewModel.setOutputMode(OutputMode.AUTO)
+            viewModel.setOutputMode(OutputMode.DISABLED)
         }
     }
     // El estado del motor refleja el modo elegido incluso cuando no hay stream
@@ -381,6 +386,13 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     var sheetAnimJob by remember { mutableStateOf<Job?>(null) }
     var lyricsAnimJob by remember { mutableStateOf<Job?>(null) }
     val favoriteUris by LibraryInsights.favorites.collectAsStateWithLifecycle()
+
+    // Origen del morph cuando se toca una fila: la carátula de esa fila vuela y se
+    // agranda hasta el slot grande del reproductor. Si está vacío, se usa el dock.
+    val pressOrigin = remember { TrackPressOrigin() }
+    // Se congela al empezar a abrir para que todo el vuelo use el mismo punto de
+    // partida aunque la lista se recicle o la fila desaparezca.
+    var morphOriginRect by remember { mutableStateOf<Rect?>(null) }
 
     var rootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var rootSizePx by remember { mutableStateOf(IntSize.Zero) }
@@ -405,17 +417,41 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
             wasSheetDragged = false
             return
         }
+        // Al cerrar, la carátula vuelve al mini reproductor. Al abrir desde una fila,
+        // el rectángulo de esa fila queda vivo durante todo el vuelo y recién se
+        // descarta al llegar: así el cierre siguiente encuentra el dock en reposo.
+        if (target <= 0f) {
+            pressOrigin.clear()
+            morphOriginRect = null
+        } else if (from < 0.5f) {
+            // Abrir desde una fila: el rectángulo se toma una sola vez, al arrancar.
+            morphOriginRect = pressOrigin.consumeRecent()
+        }
+        // Dos "motores" según cómo empezó el movimiento:
+        //  - Toque/botón: tween con duración fija y curva suave. Es lo que hace que
+        //    abrir una canción o volver al reproductor no se sienta instantáneo.
+        //  - Fling del dedo: resorte (conserva la velocidad del gesto) pero más blando
+        //    que antes, para que no frene de golpe al soltar.
+        val spec: AnimationSpec<Float> = if (fromDrag) {
+            Motion.snappy(stiffness = 240f, dampingRatio = 0.94f)
+        } else {
+            Motion.sheetTravel(open = target > 0.5f)
+        }
         sheetAnimJob = playerSheetScope.launch {
             animate(
                 initialValue = from,
                 targetValue = target,
                 initialVelocity = initialVelocity.coerceIn(-8f, 8f),
-                animationSpec = Motion.snappy(stiffness = 380f, dampingRatio = 0.90f),
+                animationSpec = spec,
             ) { value, _ ->
                 sheetProgress = value.coerceIn(0f, 1f)
             }
             sheetProgress = target
             wasSheetDragged = false
+            if (target >= 1f) {
+                pressOrigin.clear()
+                morphOriginRect = null
+            }
         }
     }
 
@@ -426,7 +462,9 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                 initialValue = playerLyricsProgress,
                 targetValue = target,
                 initialVelocity = initialVelocity.coerceIn(-8f, 8f),
-                animationSpec = Motion.snappy(stiffness = 320f, dampingRatio = 0.88f),
+                // Más blando que antes: la carátula entra/sale del rincón de letras con
+                // la misma calma que el resto de los movimientos grandes.
+                animationSpec = Motion.snappy(stiffness = 240f, dampingRatio = 0.95f),
             ) { value, _ -> playerLyricsProgress = value.coerceIn(0f, 1f) }
             playerLyricsProgress = target
         }
@@ -447,17 +485,35 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     val lyricsDragRangePx = with(density) { 200.dp.toPx() }
 
     // Reservar espacio a la onda ampliada sin sacar los controles de la pantalla.
-    val waveformHeight = if (rootSizePx.height > 0 && with(density) { rootSizePx.height.toDp() } < 720.dp) {
-        116.dp
-    } else {
-        136.dp
+    // La onda crece con la pantalla: en un teléfono alto se ve más "Poweramp".
+    val rootHeightDp = if (rootSizePx.height > 0) with(density) { rootSizePx.height.toDp() } else 780.dp
+    val waveformHeight = when {
+        rootHeightDp < 720.dp -> 112.dp
+        rootHeightDp < 850.dp -> 128.dp
+        else -> 144.dp
     }
+    // La carátula ocupa casi todo el ancho (como el reproductor de referencia) y el
+    // resto de la pantalla se reparte entre chips, acciones, onda y accesos. El tope
+    // de 380 dp evita que en una tablet quede desproporcionada.
+    //
+    // Altura: al alto total se le descuentan las barras del sistema (el `Column` del
+    // reproductor lleva `statusBarsPadding` + `navigationBarsPadding`) y el "chrome"
+    // fijo que no escala: cabecera, chips, accesos y el relleno de la tarjeta de onda
+    // (~250 dp, ver NowPlayingSheet). Sin ese descuento, en un teléfono de 720 dp con
+    // navegación de 3 botones la barra de accesos quedaba cortada abajo.
+    val insetsTopPx = if (rootSizePx.height > 0) {
+        WindowInsets.systemBars.getTop(density).toFloat()
+    } else 0f
+    val insetsBottomPx = if (rootSizePx.height > 0) {
+        WindowInsets.systemBars.getBottom(density).toFloat()
+    } else 0f
     val maxArtDp = if (rootSizePx.height > 0 && rootSizePx.width > 0) {
         with(density) {
             minOf(
-                320.dp.toPx(),
-                (rootSizePx.width - 48.dp.toPx()).coerceAtLeast(1.dp.toPx()),
-                (rootSizePx.height - (waveformHeight + 405.dp).toPx()).coerceAtLeast(120.dp.toPx()),
+                380.dp.toPx(),
+                (rootSizePx.width - 32.dp.toPx()).coerceAtLeast(1.dp.toPx()),
+                (rootSizePx.height - insetsTopPx - insetsBottomPx - (waveformHeight + 250.dp).toPx())
+                    .coerceAtLeast(196.dp.toPx()),
             ).toDp()
         }
     } else {
@@ -473,6 +529,11 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
             val bottom = (rootSizePx.height.takeIf { it > 0 } ?: 1800) - with(density) { 36.dp.toPx() }
             Rect(left, bottom - sizePx, left + sizePx, bottom)
         }
+    }
+
+    // Lo que lee el morph: el rectángulo de la fila tocada si existe; si no, el dock.
+    val resolveMorphOrigin: () -> Rect = {
+        morphOriginRect ?: resolveMiniArtRect()
     }
 
     val resolveFullArtSlotRect: () -> Rect = {
@@ -517,6 +578,16 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     val sheetController = controller
     val sheetTrack = playback.current ?: library.tracks.firstOrNull()
 
+    // Blur del fondo mientras la cola está abierta. La cola es una ventana aparte
+    // (ModalBottomSheet), así que desenfocar la raíz no la toca: sólo se difumina el
+    // reproductor de atrás. El radio sale del ajuste de blur de la app (Off = 0).
+    val queueVisible = showQueueSheet && sheetController != null
+    val queueBackdropBlur by animateDpAsState(
+        targetValue = if (queueVisible) uiSettings.blur.overlay else 0.dp,
+        animationSpec = Motion.enter(260),
+        label = "queueBackdropBlur",
+    )
+
     LaunchedEffect(sheetTrack?.uri, library.inspectTrack?.uri, audioConfig.autoAnalyze) {
         val currentTrack = sheetTrack
         if (library.inspectTrack == null && currentTrack != null && currentTrack.isLocal) {
@@ -527,6 +598,7 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
         }
     }
 
+    CompositionLocalProvider(LocalTrackPressOrigin provides pressOrigin) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -538,6 +610,13 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                 Brush.verticalGradient(
                     listOf(Ink, InkElevated, Ink),
                 ),
+            )
+            .then(
+                if (queueBackdropBlur > 0.2.dp) {
+                    Modifier.blur(queueBackdropBlur, edgeTreatment = BlurredEdgeTreatment.Rectangle)
+                } else {
+                    Modifier
+                },
             ),
     ) {
         val bottomPadding = 108
@@ -569,7 +648,10 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                         isPlaying = playback.isPlaying,
                         controller = controller,
                         bottomPadding = bottomPadding,
-                        onBackToPlayer = { animatePlayerSheet(target = 1f, fromDrag = false) },
+                        onBackToPlayer = {
+                            pressOrigin.clear()
+                            animatePlayerSheet(target = 1f, fromDrag = false)
+                        },
                         onSelectCategory = viewModel::selectCategory,
                         onQueryChange = viewModel::onQueryChange,
                         onRequestPermission = { permissionLauncher.launch(audioPermissions()) },
@@ -596,7 +678,10 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
 
                     AppSection.EQUALIZER -> EqualizerWorkspace(
                         bottomPadding = bottomPadding,
-                        onBackToPlayer = { animatePlayerSheet(target = 1f, fromDrag = false) },
+                        onBackToPlayer = {
+                            pressOrigin.clear()
+                            animatePlayerSheet(target = 1f, fromDrag = false)
+                        },
                     )
 
                     AppSection.SEARCH -> PowerampSearchWorkspace(
@@ -608,13 +693,22 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                         playbackError = playback.error,
                         controller = controller,
                         bottomPadding = bottomPadding,
-                        onBackToPlayer = { animatePlayerSheet(target = 1f, fromDrag = false) },
+                        onBackToPlayer = {
+                            pressOrigin.clear()
+                            animatePlayerSheet(target = 1f, fromDrag = false)
+                        },
                         onQueryChange = viewModel::onQueryChange,
                         onYtmQueryChange = viewModel::onYtmQueryChange,
                         onSearchYtm = { viewModel.searchYtm() },
                         onToggleLyrics = viewModel::toggleLyricsOnly,
                         onRequestPermission = { permissionLauncher.launch(audioPermissions()) },
-                        onLocalTrackClick = { tracks, index -> playTrackList(controller, tracks, index) },
+                        // Igual que en Biblioteca y en los detalles: elegir una canción
+                        // lleva al reproductor (y la carátula crece desde la fila).
+                        onLocalTrackClick = { tracks, index ->
+                            playAndOpen(controller, tracks, index) {
+                                animatePlayerSheet(target = 1f, fromDrag = false)
+                            }
+                        },
                         onAlbumClick = viewModel::selectAlbum,
                         onArtistClick = viewModel::selectArtist,
                         onInspectTrack = viewModel::setInspectTrack,
@@ -661,7 +755,10 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                 }
             },
             onNext = { controller?.seekToNext() },
-            onOpen = { animatePlayerSheet(target = 1f, fromDrag = false) },
+            onOpen = {
+                pressOrigin.clear()
+                animatePlayerSheet(target = 1f, fromDrag = false)
+            },
             onOpenSignalPath = { showSignalPath = true },
             onArtMeasured = { artCoords ->
                 val root = rootCoords
@@ -749,7 +846,7 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                 maxArtDp = maxArtDp,
                 waveformHeight = waveformHeight,
                 playPauseScale = playPauseScale,
-                miniArtRectProvider = resolveMiniArtRect,
+                artOriginRectProvider = resolveMorphOrigin,
                 fullArtSlotRectProvider = resolveFullArtSlotRect,
                 onFullArtSlotMeasured = { artCoords ->
                     val root = rootCoords
@@ -841,6 +938,10 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                     hapticTick()
                     showSettings = true
                 },
+                onOpenQueue = {
+                    hapticTick()
+                    showQueueSheet = true
+                },
             )
         }
 
@@ -853,7 +954,7 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                 isSheetDragging = isSheetDragging,
                 wasSheetDragged = wasSheetDragged,
                 baseArtDp = maxArtDp,
-                miniArtRectProvider = resolveMiniArtRect,
+                artOriginRectProvider = resolveMorphOrigin,
                 fullArtSlotRectProvider = resolveFullArtSlotRect,
             )
         }
@@ -1034,6 +1135,7 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
             onOpenSignalPath = { showSignalPath = true },
             onAnalyzeClick = { viewModel.analyzeSpectral(track) },
         )
+    }
     }
 }
 
