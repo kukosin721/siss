@@ -30,6 +30,8 @@ jobs:
     env:
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
       ANDROID_HOME: /usr/local/lib/android/sdk
+      # Fija la ruta del keystore de debug en ~/.android (AGP la deriva de esta var).
+      ANDROID_PREFS_ROOT: /home/runner
     steps:
       - uses: actions/checkout@v7
 
@@ -43,12 +45,22 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
 
       # Sin esto cada corrida genera un keystore de debug nuevo y el APK no se puede
-      # instalar encima del anterior (INSTALL_FAILED_UPDATE_INCOMPATIBLE).
+      # instalar encima del anterior (INSTALL_FAILED_UPDATE_INCOMPATIBLE). El keystore
+      # vive en la rama ci-apk y se reusa: firma estable entre builds.
       - name: Keystore de debug estable
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: debug-keystore-v1
+        run: |
+          mkdir -p "$HOME/.android"
+          if git fetch -q origin ci-apk 2>/dev/null; then
+            git show FETCH_HEAD:debug.keystore > "$HOME/.android/debug.keystore" 2>/dev/null || true
+          fi
+          if [ ! -s "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair -v \
+              -keystore "$HOME/.android/debug.keystore" -storetype JKS \
+              -storepass android -keypass android \
+              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          ls -l "$HOME/.android/debug.keystore"
 
       - name: Componentes del SDK
         run: |
@@ -98,6 +110,14 @@ jobs:
             printf 'FAILED\ncommit=%s\noutcome=%s\n' "$GITHUB_SHA" "${{ steps.build.outcome }}" > status.txt
           fi
           tail -c 600000 "$GITHUB_WORKSPACE/build.log" > build.log 2>/dev/null || true
+          # Firma estable: el keystore viaja con el APK para que el próximo build lo reuse.
+          if [ -s "$HOME/.android/debug.keystore" ]; then
+            cp "$HOME/.android/debug.keystore" debug.keystore
+            printf 'keystore=stable\n' >> status.txt
+          else
+            printf 'keystore=missing\n' >> status.txt
+            find "$HOME" -maxdepth 3 -name '*.keystore' >> status.txt 2>/dev/null || true
+          fi
           git add -A
           git -c user.name="apk-bot" -c user.email="apk-bot@users.noreply.github.com" \
               commit -q -m "APK $(cat status.txt | head -1) ${GITHUB_SHA}" || true
