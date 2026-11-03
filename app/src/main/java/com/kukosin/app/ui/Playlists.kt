@@ -404,6 +404,15 @@ internal fun PlaylistDetailSheet(
     }
 
     var menuOpen by remember { mutableStateOf(false) }
+    // Reproducir no debe hacer desaparecer la hoja de golpe: primero baja (la misma
+    // animación que al cerrarla) y recién entonces arranca la pista, mientras el
+    // reproductor sube por detrás.
+    val playAndClose: (List<Track>, Int) -> Unit = { list, index ->
+        scope.launch {
+            runCatching { sheetState.hide() }
+            onPlay(list, index)
+        }
+    }
     val coverLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent(),
     ) { uri -> if (uri != null) onCoverPicked(uri) }
@@ -556,7 +565,7 @@ internal fun PlaylistDetailSheet(
             ) {
                 Button(
                     onClick = {
-                        if (playable.isNotEmpty()) onPlay(playable, 0)
+                        if (playable.isNotEmpty()) playAndClose(playable, 0)
                     },
                     enabled = playable.isNotEmpty(),
                     colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Ink),
@@ -571,7 +580,12 @@ internal fun PlaylistDetailSheet(
                     color = InkSoft,
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(1.dp, Gold.copy(alpha = 0.35f)),
-                    modifier = Modifier.clickable(enabled = playable.isNotEmpty()) { onShuffle(playable) },
+                    modifier = Modifier.clickable(enabled = playable.isNotEmpty()) {
+                        scope.launch {
+                            runCatching { sheetState.hide() }
+                            onShuffle(playable)
+                        }
+                    },
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
@@ -725,7 +739,7 @@ internal fun PlaylistDetailSheet(
                                 } else {
                                     {
                                         val playableIndex = resolved.take(index).count { it != null }
-                                        onPlay(playable, playableIndex)
+                                        playAndClose(playable, playableIndex)
                                     }
                                 },
                                 onRemove = { onRemoveAt(index) },
@@ -853,6 +867,19 @@ internal fun AddToPlaylistSheet(
     }
     var newName by remember { mutableStateOf("") }
     val uris = remember(tracks) { tracks.map { it.uri.toString() }.toSet() }
+    // Elegir una lista (o crear una) cierra la hoja deslizándola, no de un corte.
+    val chooseAndClose: (Playlist) -> Unit = { playlist ->
+        scope.launch {
+            runCatching { sheetState.hide() }
+            onChoose(playlist)
+        }
+    }
+    val createAndClose: (String) -> Unit = { name ->
+        scope.launch {
+            runCatching { sheetState.hide() }
+            onCreateAndAdd(name)
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = dismissSmoothly,
@@ -911,7 +938,7 @@ internal fun AddToPlaylistSheet(
                     keyboardActions = KeyboardActions(
                         onDone = {
                             if (newName.isNotBlank()) {
-                                onCreateAndAdd(newName.trim())
+                                createAndClose(newName.trim())
                                 newName = ""
                             }
                         },
@@ -922,7 +949,7 @@ internal fun AddToPlaylistSheet(
                 Button(
                     onClick = {
                         if (newName.isNotBlank()) {
-                            onCreateAndAdd(newName.trim())
+                            createAndClose(newName.trim())
                             newName = ""
                         }
                     },
@@ -957,7 +984,7 @@ internal fun AddToPlaylistSheet(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable(enabled = !allIn) { onChoose(playlist) }
+                            .clickable(enabled = !allIn) { chooseAndClose(playlist) }
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {

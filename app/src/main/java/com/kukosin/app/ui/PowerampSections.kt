@@ -470,6 +470,7 @@ internal fun PowerampLibraryWorkspace(
                     queueCount,
                     favoriteCount,
                     playedCount,
+                    playlists,
                 ) {
                     listOf(
                         CategoryCardSpec(
