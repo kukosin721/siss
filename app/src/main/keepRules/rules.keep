@@ -1,0 +1,27 @@
+# Add project specific R8 rules here.
+# AGP will combine all keep rule files in src/main/keepRules to pass to R8
+#
+# For more details, see
+#   https://d.android.com/r/tools/r8/keep-rules
+
+# If your project uses WebView with JS, uncomment the following
+# and specify the fully qualified class name to the JavaScript interface
+# class:
+#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
+#   public *;
+#}
+# ── NewPipeExtractor (YouTube Music) ────────────────────────────────────────────
+# El extractor usa reflexión, un motor JS (Rhino), protobuf y jsoup; sin estas
+# reglas el build de release con R8 rompe la extracción en tiempo de ejecución.
+-keep class org.schabi.newpipe.extractor.** { *; }
+-keep interface org.schabi.newpipe.extractor.** { *; }
+-dontwarn org.schabi.newpipe.**
+-keep class com.grack.nanojson.** { *; }
+-dontwarn com.grack.nanojson.**
+-keep class org.mozilla.javascript.** { *; }
+-keep class org.mozilla.classfile.** { *; }
+-dontwarn org.mozilla.**
+-keep class com.google.protobuf.** { *; }
+-dontwarn com.google.protobuf.**
+-keep class org.jsoup.** { *; }
+-dontwarn org.jsoup.**

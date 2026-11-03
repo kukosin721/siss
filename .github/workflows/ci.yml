@@ -1,0 +1,99 @@
+name: CI
+
+# Verificación mínima en cada push/PR:
+#   1. pruebas JVM de la app (kotlinc/gradlew, sin emulador)
+#   2. el arnés del motor de audio nativo en el host (dobles de Oboe), con ASan y TSan
+#      (incluye continuidad: flush de transición, preroll y curva de volumen)
+#   3. el arnés del ecualizador (DSP puro en la JVM)
+#   4. el arnés del volumen de hardware del DAC (descriptores USB sintéticos)
+#   5. el arnés del decodificador FLAC propio (comparación bit a bit contra libFLAC)
+#
+# Nada de esto necesita un dispositivo: compilan y ejecutan la lógica real (DSP, ring
+# SPSC, JNI contract) contra dobles, así una rotura se ve en el PR y no en el teléfono.
+
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jvm:
+    name: JVM (app + EQ + PCM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Gradle cache
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Pruebas unitarias
+        run: ./gradlew --no-daemon test
+
+      - name: Arnés del ecualizador (DSP en la JVM)
+        run: ./tools/eq-tests/run.sh
+
+      - name: Arnés del volumen del DAC (USB Audio Class)
+        run: ./tools/dac-volume-tests/run.sh
+
+  native:
+    name: Motor nativo (host, ASan + TSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Dependencias
+        run: sudo apt-get update && sudo apt-get install -y g++ make
+
+      - name: Pruebas del motor (normal)
+        run: ./tools/native-tests/run.sh
+
+      - name: Pruebas del motor (AddressSanitizer)
+        run: ./tools/native-tests/run.sh --asan
+
+      - name: Pruebas del motor (ThreadSanitizer)
+        run: ./tools/native-tests/run.sh --tsan
+
+      - name: Dependencias del arnés FLAC (libFLAC vía libsndfile)
+        run: python3 -m pip install --user soundfile numpy
+
+      - name: Decodificador FLAC (normal)
+        run: ./tools/flac-tests/run.sh
+
+      - name: Decodificador FLAC (AddressSanitizer + UBSan)
+        run: ./tools/flac-tests/run.sh --asan
+
+      - name: Decodificador FLAC (ThreadSanitizer)
+        run: ./tools/flac-tests/run.sh --tsan
+
+  lint:
+    name: Tipos Kotlin sin SDK (kotlinc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Kotlin 2.2.10 (misma versión que compila la app)
+        run: |
+          curl -sSL -o /tmp/kotlinc.zip \
+            https://github.com/JetBrains/kotlin/releases/download/v2.2.10/kotlin-compiler-2.2.10.zip
+          unzip -q /tmp/kotlinc.zip -d /opt
+          echo "/opt/kotlinc/bin" >> "$GITHUB_PATH"
+
+      - name: Verificación de tipos con stubs
+        run: ./tools/native-tests/kt-check.sh
