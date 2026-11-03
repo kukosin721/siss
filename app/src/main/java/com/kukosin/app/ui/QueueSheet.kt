@@ -1459,6 +1459,10 @@ fun TrackOptionsMenu(
     onInspect: () -> Unit,
     onMessage: (String) -> Unit,
 ) {
+    // La acción de playlists la provee PlayerApp (ver `LocalAddToPlaylist`): así el mismo
+    // menú la ofrece en la biblioteca, en la cola y en el detalle de un álbum sin que cada
+    // pantalla tenga que pasarla por parámetro.
+    val addToPlaylist = LocalAddToPlaylist.current
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
@@ -1486,6 +1490,18 @@ fun TrackOptionsMenu(
                 onDismiss()
             },
         )
+        if (addToPlaylist != null) {
+            DropdownMenuItem(
+                text = { Text("Add to playlist", color = Cream) },
+                leadingIcon = {
+                    Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = null, tint = Gold)
+                },
+                onClick = {
+                    onDismiss()
+                    addToPlaylist(listOf(track))
+                },
+            )
+        }
         DropdownMenuItem(
             text = { Text("Technical info / Metadata", color = Cream) },
             leadingIcon = {

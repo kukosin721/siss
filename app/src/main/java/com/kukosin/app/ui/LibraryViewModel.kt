@@ -2,6 +2,7 @@ package com.kukosin.app.ui
 
 import android.app.Application
 import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import com.kukosin.app.data.analysis.LyricsIndex
 import androidx.lifecycle.viewModelScope
@@ -9,6 +10,8 @@ import com.kukosin.app.data.AlbumGroup
 import com.kukosin.app.data.ArtistGroup
 import com.kukosin.app.data.FolderNode
 import com.kukosin.app.data.MusicLibrary
+import com.kukosin.app.data.Playlist
+import com.kukosin.app.data.PlaylistStore
 import com.kukosin.app.data.StartupCache
 import com.kukosin.app.data.TagCategoryGroup
 import com.kukosin.app.data.Track
@@ -327,8 +330,35 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
 
     val audioConfig: StateFlow<AudioConfig> = AudioSettingsManager.configState
 
+    /** Playlists del usuario; viven en [PlaylistStore] y se comparten con el reproductor. */
+    val playlists: StateFlow<List<Playlist>> = PlaylistStore.playlists
+
+    fun createPlaylist(name: String, tracks: List<Track> = emptyList()): Playlist? =
+        PlaylistStore.create(name, tracks.map { it.uri.toString() })
+
+    fun renamePlaylist(id: String, name: String) = PlaylistStore.rename(id, name)
+
+    fun deletePlaylist(id: String) = PlaylistStore.delete(id)
+
+    /** Devuelve cuántas pistas entraron (las que ya estaban no se duplican). */
+    fun addToPlaylist(id: String, tracks: List<Track>): Int =
+        PlaylistStore.addTracks(id, tracks.map { it.uri.toString() })
+
+    fun addUrisToPlaylist(id: String, uris: List<String>): Int = PlaylistStore.addTracks(id, uris)
+
+    fun removeFromPlaylist(id: String, index: Int) = PlaylistStore.removeAt(id, index)
+
+    fun removeUriFromPlaylist(id: String, uri: String) = PlaylistStore.removeUri(id, uri)
+
+    fun moveInPlaylist(id: String, from: Int, to: Int) = PlaylistStore.move(id, from, to)
+
+    fun setPlaylistCover(id: String, uri: Uri) = PlaylistStore.setCover(id, uri)
+
+    fun clearPlaylistCover(id: String) = PlaylistStore.clearCover(id)
+
     init {
         AudioSettingsManager.init(getApplication())
+        PlaylistStore.init(getApplication())
     }
 
     /** "Rescan": tira la caché de sondeo (memoria + disco) y reconstruye. */

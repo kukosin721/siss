@@ -121,6 +121,7 @@ import com.kukosin.app.data.ArtistGroup
 import com.kukosin.app.data.FolderNode
 import com.kukosin.app.data.LibraryInsights
 import com.kukosin.app.data.TagCategoryGroup
+import com.kukosin.app.data.Playlist
 import com.kukosin.app.data.Track
 import com.kukosin.app.data.formatTime
 import com.kukosin.app.data.ytm.YtmTrack
@@ -279,6 +280,12 @@ internal fun PowerampLibraryWorkspace(
     onInspectTrack: (Track) -> Unit,
     onMessage: (String) -> Unit,
     onSortChange: (LibrarySort) -> Unit,
+    /** Playlists del usuario y acciones para gestionarlas (viven en `PlaylistStore`). */
+    playlists: List<Playlist> = emptyList(),
+    onOpenPlaylist: (Playlist) -> Unit = {},
+    onPlayPlaylist: (Playlist) -> Unit = {},
+    onCreatePlaylist: () -> Unit = {},
+    onSaveQueueAsPlaylist: () -> Unit = {},
     /** Pista a resaltar y a la que hay que desplazar la lista (viene del reproductor). */
     focusUri: Uri? = null,
     modifier: Modifier = Modifier,
@@ -286,6 +293,11 @@ internal fun PowerampLibraryWorkspace(
     val activeCategory = library.activeCategory
     val queueSnapshot = rememberQueueSnapshot(controller, library.tracks)
     val queueCount = queueSnapshot.totalCount
+    // Resolver las URIs de una playlist contra la biblioteca actual: la metadata y las
+    // carátulas salen siempre del archivo real, no de una copia guardada.
+    val tracksByUri = remember(library.tracks) {
+        library.tracks.associateBy { it.uri.toString() }
+    }
     val favoriteUris by LibraryInsights.favorites.collectAsStateWithLifecycle()
     val playCounts by LibraryInsights.playCounts.collectAsStateWithLifecycle()
     val favoriteTracks = remember(library.tracks, library.query, favoriteUris) {
@@ -503,8 +515,11 @@ internal fun PowerampLibraryWorkspace(
                         CategoryCardSpec(
                             category = LibraryCategory.LISTAS_DE_REPRODUCCION,
                             icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
-                            subtitle = "Custom playlists",
-                            badge = "Soon",
+                            subtitle = when (playlists.size) {
+                                0 -> "Create your first playlist"
+                                1 -> "1 playlist · ${playlists.first().size} songs"
+                                else -> "${playlists.size} playlists"
+                            },
                         ),
                         CategoryCardSpec(
                             category = LibraryCategory.LA_COLA,
@@ -779,11 +794,18 @@ internal fun PowerampLibraryWorkspace(
                             }
 
                             LibraryCategory.LISTAS_DE_REPRODUCCION -> {
-                                UpcomingCategoryPlaceholder(
-                                    icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
-                                    title = "Playlists",
-                                    description = "Here you can create your own playlists, save current queues and import M3U/M3U8 files. Their logic will be implemented in the next step.",
+                                PlaylistsCategoryView(
+                                    playlists = playlists,
+                                    tracksOf = { playlist ->
+                                        playlist.trackUris.mapNotNull { uri -> tracksByUri[uri] }
+                                    },
+                                    queueCount = queueCount,
+                                    onOpen = onOpenPlaylist,
+                                    onPlay = onPlayPlaylist,
+                                    onCreate = onCreatePlaylist,
+                                    onSaveQueue = onSaveQueueAsPlaylist,
                                     modifier = Modifier.weight(1f),
+                                    bottomPadding = bottomPadding,
                                 )
                             }
 

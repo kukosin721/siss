@@ -165,6 +165,7 @@ import com.kukosin.app.data.AlbumGroup
 import com.kukosin.app.data.ArtistGroup
 import com.kukosin.app.data.FolderNode
 import com.kukosin.app.data.LibraryInsights
+import com.kukosin.app.data.Playlist
 import com.kukosin.app.data.Track
 import com.kukosin.app.data.formatTime
 import com.kukosin.app.data.ytm.YtmTrack
@@ -219,6 +220,13 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     var showSignalPath by remember { mutableStateOf(false) }
     var showQueueSheet by remember { mutableStateOf(false) }
     var userMessage by remember { mutableStateOf<String?>(null) }
+
+    // ── Playlists ──
+    val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    var playlistDetailId by remember { mutableStateOf<String?>(null) }
+    var playlistPickerId by remember { mutableStateOf<String?>(null) }
+    var addToPlaylistTracks by remember { mutableStateOf<List<Track>>(emptyList()) }
+    var playlistPrompt by remember { mutableStateOf<PlaylistPrompt?>(null) }
     // Pista a la que hay que llevar la biblioteca después de tocar la carátula.
     var libraryFocusUri by remember { mutableStateOf<android.net.Uri?>(null) }
     // Dock (mini reproductor) retráctil: se esconde al bajar en la lista y vuelve al subir.
@@ -560,7 +568,9 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     // retrocede en subcategorías o vuelve con animación al reproductor principal.
     val modalOpen = showQueueSheet || showSignalPath || settingsDialogVisible ||
         library.selectedAlbum != null || library.selectedArtist != null ||
-        library.selectedTagGroup != null || library.inspectTrack != null
+        library.selectedTagGroup != null || library.inspectTrack != null ||
+        playlistDetailId != null || playlistPickerId != null ||
+        addToPlaylistTracks.isNotEmpty() || playlistPrompt != null
     BackHandler(enabled = !modalOpen && (!showNowPlaying || sheetProgress < 0.999f)) {
         if (sheetProgress > 0.01f) {
             animatePlayerSheet(target = 1f, fromDrag = false)
@@ -598,7 +608,17 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
         }
     }
 
-    CompositionLocalProvider(LocalTrackPressOrigin provides pressOrigin) {
+    // Los menús de pista (biblioteca, cola, álbum) ofrecen "Add to playlist" a través de
+    // este local: la acción es del reproductor y no vale la pena pasarla por parámetro por
+    // cada pantalla.
+    val addToPlaylistAction: (List<Track>) -> Unit = remember(viewModel) {
+        { tracks -> if (tracks.isNotEmpty()) addToPlaylistTracks = tracks }
+    }
+
+    CompositionLocalProvider(
+        LocalTrackPressOrigin provides pressOrigin,
+        LocalAddToPlaylist provides addToPlaylistAction,
+    ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -673,6 +693,50 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                         onInspectTrack = viewModel::setInspectTrack,
                         onMessage = { msg -> userMessage = msg },
                         onSortChange = viewModel::setSortMode,
+                        playlists = playlists,
+                        onOpenPlaylist = { playlist -> playlistDetailId = playlist.id },
+                        onPlayPlaylist = { playlist ->
+                            val byUri = library.tracks.associateBy { it.uri.toString() }
+                            val list = playlist.trackUris.mapNotNull { uri -> byUri[uri] }
+                            if (list.isEmpty()) {
+                                userMessage = "This playlist has no songs in the library"
+                            } else {
+                                playAndOpen(controller, list, 0) {
+                                    animatePlayerSheet(target = 1f, fromDrag = false)
+                                }
+                            }
+                        },
+                        onCreatePlaylist = {
+                            playlistPrompt = PlaylistPrompt(
+                                playlistId = null,
+                                initial = "",
+                                title = "New playlist",
+                                confirm = "Create",
+                            )
+                        },
+                        onSaveQueueAsPlaylist = {
+                            val current = controller
+                            val byUri = library.tracks.associateBy { it.uri.toString() }
+                            val uris = if (current == null) {
+                                emptyList()
+                            } else {
+                                (0 until current.mediaItemCount)
+                                    .map { index -> current.getMediaItemAt(index).mediaId }
+                                    .filter { it in byUri }
+                                    .distinct()
+                            }
+                            if (uris.isEmpty()) {
+                                userMessage = "The queue has no songs from the library"
+                            } else {
+                                playlistPrompt = PlaylistPrompt(
+                                    playlistId = null,
+                                    initial = "Queue",
+                                    title = "Save queue as playlist",
+                                    confirm = "Save",
+                                    pendingTracks = uris.mapNotNull { uri -> byUri[uri] },
+                                )
+                            }
+                        },
                         focusUri = libraryFocusUri,
                     )
 
@@ -1014,6 +1078,134 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
         )
     }
 
+    // ── Playlists ──────────────────────────────────────────────────────────
+    // "Agregar a la playlist" desde el menú de una pista de cualquier pantalla.
+    if (addToPlaylistTracks.isNotEmpty()) {
+        val tracks = addToPlaylistTracks
+        AddToPlaylistSheet(
+            tracks = tracks,
+            playlists = playlists,
+            containedCount = { playlist ->
+                val uris = tracks.map { it.uri.toString() }
+                playlist.trackUris.count { it in uris }
+            },
+            onChoose = { playlist ->
+                val added = viewModel.addToPlaylist(playlist.id, tracks)
+                userMessage = if (added == 0) {
+                    "Already in \"${playlist.name}\""
+                } else {
+                    "$added ${if (added == 1) "song" else "songs"} added to \"${playlist.name}\""
+                }
+                addToPlaylistTracks = emptyList()
+            },
+            onCreateAndAdd = { name ->
+                val created = viewModel.createPlaylist(name, tracks)
+                userMessage = if (created != null) {
+                    "Playlist \"${created.name}\" created with ${tracks.size} ${if (tracks.size == 1) "song" else "songs"}"
+                } else {
+                    "Could not create the playlist"
+                }
+                addToPlaylistTracks = emptyList()
+            },
+            onDismiss = { addToPlaylistTracks = emptyList() },
+        )
+    }
+
+    // Pickers y detalle se resuelven por id: si la lista se borra, la hoja se cierra sola.
+    LaunchedEffect(playlists, playlistDetailId) {
+        if (playlistDetailId != null && playlists.none { it.id == playlistDetailId }) {
+            playlistDetailId = null
+        }
+    }
+    LaunchedEffect(playlists, playlistPickerId) {
+        if (playlistPickerId != null && playlists.none { it.id == playlistPickerId }) {
+            playlistPickerId = null
+        }
+    }
+
+    playlistDetailId?.let { id ->
+        val playlist = playlists.firstOrNull { it.id == id }
+        if (playlist != null) {
+            val resolved = remember(playlist.trackUris, library.tracks) {
+                val byUri = library.tracks.associateBy { it.uri.toString() }
+                playlist.trackUris.map { uri -> byUri[uri] }
+            }
+            PlaylistDetailSheet(
+                playlist = playlist,
+                resolved = resolved,
+                currentUri = playback.current?.uri,
+                isPlaying = playback.isPlaying,
+                onPlay = { tracks, index ->
+                    playlistDetailId = null
+                    playAndOpen(controller, tracks, index) {
+                        animatePlayerSheet(target = 1f, fromDrag = false)
+                    }
+                },
+                onShuffle = { tracks ->
+                    playlistDetailId = null
+                    playAndOpen(controller, tracks.shuffled(), 0) {
+                        animatePlayerSheet(target = 1f, fromDrag = false)
+                    }
+                },
+                onAddSongs = { playlistPickerId = playlist.id },
+                onRename = {
+                    playlistPrompt = PlaylistPrompt(
+                        playlistId = playlist.id,
+                        initial = playlist.name,
+                        title = "Rename playlist",
+                        confirm = "Save",
+                    )
+                },
+                onDelete = {
+                    viewModel.deletePlaylist(playlist.id)
+                    playlistDetailId = null
+                    userMessage = "Playlist deleted"
+                },
+                onCoverPicked = { uri -> viewModel.setPlaylistCover(playlist.id, uri) },
+                onRemoveCover = { viewModel.clearPlaylistCover(playlist.id) },
+                onRemoveAt = { index -> viewModel.removeFromPlaylist(playlist.id, index) },
+                onMove = { from, to -> viewModel.moveInPlaylist(playlist.id, from, to) },
+                onDismiss = { playlistDetailId = null },
+            )
+        }
+    }
+
+    playlistPickerId?.let { id ->
+        val playlist = playlists.firstOrNull { it.id == id }
+        if (playlist != null) {
+            PlaylistTrackPickerSheet(
+                playlistName = playlist.name,
+                allTracks = library.tracks,
+                existingUris = playlist.trackUris.toSet(),
+                onPick = { track -> viewModel.addToPlaylist(playlist.id, listOf(track)) },
+                onDismiss = { playlistPickerId = null },
+            )
+        }
+    }
+
+    playlistPrompt?.let { prompt ->
+        PlaylistNameDialog(
+            title = prompt.title,
+            initial = prompt.initial,
+            confirmLabel = prompt.confirm,
+            onConfirm = { name ->
+                val playlistId = prompt.playlistId
+                if (playlistId == null) {
+                    val created = viewModel.createPlaylist(name, prompt.pendingTracks)
+                    userMessage = if (created != null) {
+                        "Playlist \"${created.name}\" created"
+                    } else {
+                        "Could not create the playlist"
+                    }
+                } else {
+                    viewModel.renamePlaylist(playlistId, name)
+                }
+                playlistPrompt = null
+            },
+            onDismiss = { playlistPrompt = null },
+        )
+    }
+
     if (settingsDialogVisible) {
         FullScreenSettingsScreen(
             visibilityState = settingsVisibility,
@@ -1285,14 +1477,14 @@ internal fun rememberPlaybackState(
 
 /** La misma carátula se desplaza y encoge del centro a la esquina superior izquierda. */
 
-
-
-
-
-
-
-
-
-
-
-
+/**
+ * Diálogo de nombre pendiente: sirve para crear una lista (con pistas ya elegidas, como
+ * "guardar la cola") y para renombrar una existente.
+ */
+private data class PlaylistPrompt(
+    val playlistId: String?,
+    val initial: String,
+    val title: String,
+    val confirm: String,
+    val pendingTracks: List<Track> = emptyList(),
+)

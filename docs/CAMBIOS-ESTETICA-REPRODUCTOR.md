@@ -102,7 +102,34 @@ verticalmente, y revelado escalonado de izquierda a derecha cuando llega la onda
 - Cerrar desde el botón (o desde el scrim/atrás) **baja la hoja con su animación** antes
   de sacarla de la composición; el blur se apaga junto con el deslizamiento.
 
-## 7. Ecualizador
+## 7. Playlists (crear, editar, portada y "agregar a la playlist")
+
+- **Biblioteca → Playlists** deja de ser un cartel de "próximamente": es una rejilla con
+  una tarjeta **"New playlist"** siempre primera y, arriba, **"Save queue"** cuando hay
+  algo en la cola (guarda la cola actual tal cual como lista nueva).
+- **Crear**: nombre libre. La lista se guarda como URIs, no como copia de la metadata: al
+  abrirla, títulos, artistas y carátulas se resuelven contra la biblioteca actual.
+- **Detalle** (hoja al 94 %): portada, nombre, cantidad y duración total, y los botones
+  Play / Shuffle / Add songs.
+- **Modificar**:
+  - Tocar una fila reproduce desde esa canción.
+  - **Mantener pulsado y arrastrar** reordena (las filas se corren para mostrar el hueco).
+  - La ✕ saca la canción de la lista (si el archivo ya no está, la fila lo dice y también
+    se puede quitar).
+  - Menú (⋮): **Rename**, **Change cover**, **Remove cover**, **Add songs**, **Delete
+    playlist**.
+  - **Add songs**: buscador sobre la biblioteca; tocar agrega al instante y marca con ✓ lo
+    que ya está.
+- **Portada**: se elige con el selector de imágenes del sistema; se copia y se reduce a
+  1024 px en `filesDir/playlists/covers/<id>.jpg` (JPEG 90 %), así no depende del permiso
+  del archivo original y no guarda una foto de 12 MB. Sin portada, la tarjeta usa un
+  degradado del acento con el ícono de cola.
+- **Agregar a la playlist** aparece en el menú ⋮ de **cualquier** pista (biblioteca,
+  carpetas, cola, álbum): abre una hoja con las listas, cuántas de las canciones elegidas
+  ya están adentro, y un campo para **crear una lista nueva** con esas canciones sin salir
+  de la hoja. Las repetidas no se duplican.
+
+## 8. Ecualizador
 
 - `Flat` restaura las bandas de fábrica (antes sólo ponía las ganancias en 0 y dejaba
   vivas las bandas de corte).
@@ -116,7 +143,7 @@ verticalmente, y revelado escalonado de izquierda a derecha cuando llega la onda
 - Subtítulo con `· bypass` cuando el EQ está apagado (el switch sigue manda: el DSP no
   se aplica si está off).
 
-## 8. Oboe apagado por defecto
+## 9. Oboe apagado por defecto
 
 Oboe da problemas de audio en varios dispositivos, así que queda **desactivado por
 defecto** hasta repararlo:
@@ -145,5 +172,7 @@ con Android Studio:
 
 Y a mano: abrir una canción larga desde la lista (la portada debe crecer desde esa
 fila), mirar la onda hasta el final (sin cola plana), probar play/pausa, ±10 s,
-siguiente/anterior, EQ y shuffle/repetición, y **arrastrar hacia arriba el tirador
-QUEUE** debajo de la onda (debe abrir la cola con el fondo desenfocado).
+siguiente/anterior, EQ y shuffle/repetición, **arrastrar hacia arriba el tirador
+QUEUE** debajo de la onda (debe abrir la cola con el fondo desenfocado), y en Biblioteca →
+Playlists crear una lista, meterle canciones desde el menú ⋮ de una pista, cambiarle la
+portada y reordenarla manteniendo pulsado.
