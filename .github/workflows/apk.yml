@@ -42,6 +42,14 @@ jobs:
       - name: Gradle cache
         uses: gradle/actions/setup-gradle@v6
 
+      # Sin esto cada corrida genera un keystore de debug nuevo y el APK no se puede
+      # instalar encima del anterior (INSTALL_FAILED_UPDATE_INCOMPATIBLE).
+      - name: Keystore de debug estable
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: debug-keystore-v1
+
       - name: Componentes del SDK
         run: |
           set -x
