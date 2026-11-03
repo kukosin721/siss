@@ -6,7 +6,8 @@ name: APK
 # alcanza un `git fetch` para bajar el APK, el log y el keystore.
 #
 #   rama ci-apk:
-#     app-debug.apk      → APK instalable (solo si el build salió bien)
+#     waos-debug.apk     → APK de debug (sin optimizar; útil para probar cambios)
+#     waos-release.apk   → APK de release con R8, firmado igual (rendimiento real)
 #     debug.keystore     → keystore de debug estable (firma repetible entre builds)
 #     status.txt         → OK / FAILED + sha, tamaño, estado del keystore
 #     build.log          → cola del log de Gradle
@@ -82,9 +83,7 @@ jobs:
             "$SDKMANAGER" --install "$pkg" > /dev/null 2>&1 || true
           done
 
-      - name: Build
-        id: build
-        continue-on-error: true
+      - name: Preparar Gradle
         run: |
           chmod +x gradlew
           # El gradle.properties del repo está afinado para el sandbox de 2 GB; en el
@@ -98,8 +97,28 @@ jobs:
           kotlin.daemon.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m
           android.builder.sdkDownload=true
           EOF
+
+      # APK de debug: el que sirve para probar cambios (más lento por no estar optimizado).
+      - name: Build debug
+        id: build_debug
+        continue-on-error: true
+        run: |
           set -o pipefail
           ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee build.log
+
+      # APK de release firmado con el mismo keystore: R8 activo, o sea el rendimiento real
+      # (útil para juzgar fluidez). Si R8 rompe algo, el de debug sigue disponible.
+      - name: Build release
+        id: build_release
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace :app:assembleRelease \
+            -Pandroid.injected.signing.store.file="$HOME/.android/debug.keystore" \
+            -Pandroid.injected.signing.store.password=android \
+            -Pandroid.injected.signing.key.alias=androiddebugkey \
+            -Pandroid.injected.signing.key.password=android \
+            2>&1 | tee -a build.log
 
       - name: Publicar en la rama ci-apk
         if: always()
@@ -109,14 +128,14 @@ jobs:
           rm -rf "$out" && mkdir -p "$out" && cd "$out"
           git init -q
           git checkout -q --orphan ci-apk
-          apk="$(find "$GITHUB_WORKSPACE/app/build/outputs/apk" -name '*.apk' 2>/dev/null | head -1 || true)"
-          if [ "${{ steps.build.outcome }}" = "success" ] && [ -n "$apk" ] && [ -f "$apk" ]; then
-            cp "$apk" app-debug.apk
-            printf 'OK\n' > status.txt
-          else
-            printf 'FAILED\n' > status.txt
-          fi
-          printf 'commit=%s\noutcome=%s\n' "$GITHUB_SHA" "${{ steps.build.outcome }}" >> status.txt
+          dbg="$(find "$GITHUB_WORKSPACE/app/build/outputs/apk/debug" -name '*.apk' 2>/dev/null | head -1 || true)"
+          rel="$(find "$GITHUB_WORKSPACE/app/build/outputs/apk/release" -name '*.apk' 2>/dev/null | head -1 || true)"
+          if [ -n "$dbg" ]; then cp "$dbg" waos-debug.apk; fi
+          if [ -n "$rel" ]; then cp "$rel" waos-release.apk; fi
+          if [ -n "$dbg" ] || [ -n "$rel" ]; then printf 'OK\n' > status.txt; else printf 'FAILED\n' > status.txt; fi
+          printf 'commit=%s\ndebug=%s (%s)\nrelease=%s (%s)\n' \
+            "$GITHUB_SHA" "${{ steps.build_debug.outcome }}" "$(basename "${dbg:-none}")" \
+            "${{ steps.build_release.outcome }}" "$(basename "${rel:-none}")" >> status.txt
           # Firma estable: el keystore viaja con el APK para que el próximo build lo reuse.
           if [ -s "$HOME/.android/debug.keystore" ]; then
             cp "$HOME/.android/debug.keystore" debug.keystore
@@ -136,5 +155,6 @@ jobs:
         if: always()
         run: |
           echo "### APK" >> "$GITHUB_STEP_SUMMARY"
-          echo "- resultado: ${{ steps.build.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- debug: ${{ steps.build_debug.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- release: ${{ steps.build_release.outcome }}" >> "$GITHUB_STEP_SUMMARY"
           ls -l app/build/outputs/apk/debug 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || true
