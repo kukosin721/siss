@@ -3,12 +3,14 @@ name: APK
 # Compila el APK de debug en un runner de GitHub (el sandbox de desarrollo no tiene
 # JDK ni SDK de Android). El resultado se publica en la rama `ci-apk` porque los
 # artefactos de Actions no siempre se pueden descargar desde el sandbox; con la rama
-# alcanza un `git fetch` para bajar el APK y el log de compilación.
+# alcanza un `git fetch` para bajar el APK, el log y el keystore.
 #
 #   rama ci-apk:
 #     app-debug.apk      → APK instalable (solo si el build salió bien)
-#     status.txt         → OK / FAILED + ruta y tamaño
-#     build.log          → cola del log de Gradle (para ver el error exacto)
+#     debug.keystore     → keystore de debug estable (firma repetible entre builds)
+#     status.txt         → OK / FAILED + sha, tamaño, estado del keystore
+#     build.log          → cola del log de Gradle
+#     ci-diag.txt        → traza del paso del keystore (set -x)
 
 on:
   workflow_dispatch:
@@ -49,31 +51,36 @@ jobs:
       # vive en la rama ci-apk y se reusa: firma estable entre builds.
       - name: Keystore de debug estable
         run: |
+          exec > >(tee -a "$GITHUB_WORKSPACE/ci-diag.txt") 2>&1
+          set -x
           mkdir -p "$HOME/.android"
-          if git fetch -q origin ci-apk 2>/dev/null; then
-            git show FETCH_HEAD:debug.keystore > "$HOME/.android/debug.keystore" 2>/dev/null || true
+          git fetch origin ci-apk || true
+          if git cat-file -e FETCH_HEAD:debug.keystore 2>/dev/null; then
+            git show FETCH_HEAD:debug.keystore > "$HOME/.android/debug.keystore" || true
+            echo "keystore restaurado de ci-apk"
           fi
           if [ ! -s "$HOME/.android/debug.keystore" ]; then
-            keytool -genkeypair -v \
+            echo "generando keystore nuevo"
+            keytool -genkeypair \
               -keystore "$HOME/.android/debug.keystore" -storetype JKS \
               -storepass android -keypass android \
               -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+              -dname "CN=Android Debug,O=Android,C=US" || echo "keytool rc=$?"
           fi
-          ls -l "$HOME/.android/debug.keystore"
+          ls -l "$HOME/.android/" || true
+          which keytool || true
+          java -version || true
 
       - name: Componentes del SDK
         run: |
-          set -x
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           [ -x "$SDKMANAGER" ] || SDKMANAGER="$(command -v sdkmanager)"
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          # Platform/build-tools/NDK/CMake que falten los resuelve AGP; acá adelantamos
+          # Platform/build-tools/NDK que falten los resuelve AGP; acá adelantamos
           # los que casi siempre hacen falta para no depender de la descarga implícita.
           for pkg in "platform-tools" "cmake;3.22.1"; do
             "$SDKMANAGER" --install "$pkg" > /dev/null 2>&1 || true
           done
-          "$SDKMANAGER" --list_installed || true
 
       - name: Build
         id: build
@@ -91,8 +98,8 @@ jobs:
           kotlin.daemon.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m
           android.builder.sdkDownload=true
           EOF
+          set -o pipefail
           ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee build.log
-          exit ${PIPESTATUS[0]}
 
       - name: Publicar en la rama ci-apk
         if: always()
@@ -105,11 +112,11 @@ jobs:
           apk="$(find "$GITHUB_WORKSPACE/app/build/outputs/apk" -name '*.apk' 2>/dev/null | head -1 || true)"
           if [ "${{ steps.build.outcome }}" = "success" ] && [ -n "$apk" ] && [ -f "$apk" ]; then
             cp "$apk" app-debug.apk
-            printf 'OK\ncommit=%s\nfile=app-debug.apk\nsize=%s\n' "$GITHUB_SHA" "$(stat -c%s app-debug.apk)" > status.txt
+            printf 'OK\n' > status.txt
           else
-            printf 'FAILED\ncommit=%s\noutcome=%s\n' "$GITHUB_SHA" "${{ steps.build.outcome }}" > status.txt
+            printf 'FAILED\n' > status.txt
           fi
-          tail -c 600000 "$GITHUB_WORKSPACE/build.log" > build.log 2>/dev/null || true
+          printf 'commit=%s\noutcome=%s\n' "$GITHUB_SHA" "${{ steps.build.outcome }}" >> status.txt
           # Firma estable: el keystore viaja con el APK para que el próximo build lo reuse.
           if [ -s "$HOME/.android/debug.keystore" ]; then
             cp "$HOME/.android/debug.keystore" debug.keystore
@@ -118,9 +125,11 @@ jobs:
             printf 'keystore=missing\n' >> status.txt
             find "$HOME" -maxdepth 3 -name '*.keystore' >> status.txt 2>/dev/null || true
           fi
+          tail -c 600000 "$GITHUB_WORKSPACE/build.log" > build.log 2>/dev/null || true
+          tail -c 200000 "$GITHUB_WORKSPACE/ci-diag.txt" > ci-diag.txt 2>/dev/null || true
           git add -A
           git -c user.name="apk-bot" -c user.email="apk-bot@users.noreply.github.com" \
-              commit -q -m "APK $(cat status.txt | head -1) ${GITHUB_SHA}" || true
+              commit -q -m "APK $(head -1 status.txt) ${GITHUB_SHA}" || true
           git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" HEAD:ci-apk
 
       - name: Resumen
