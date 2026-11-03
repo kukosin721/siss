@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
 object LibraryInsights {
     private var favoritesPreferences: SharedPreferences? = null
     private var countsPreferences: SharedPreferences? = null
+    private var lastPlayedPreferences: SharedPreferences? = null
 
     private val _favorites = MutableStateFlow<Set<String>>(emptySet())
     val favorites: StateFlow<Set<String>> = _favorites.asStateFlow()
@@ -17,14 +18,23 @@ object LibraryInsights {
     private val _playCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
     val playCounts: StateFlow<Map<String, Int>> = _playCounts.asStateFlow()
 
+    /** uri → momento (epoch ms) de la última reproducción real. Alimenta "Recientes". */
+    private val _lastPlayed = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val lastPlayed: StateFlow<Map<String, Long>> = _lastPlayed.asStateFlow()
+
     @Synchronized
     fun init(context: Context) {
         if (favoritesPreferences != null) return
         val app = context.applicationContext
         val favorites = app.getSharedPreferences("library_favorites", Context.MODE_PRIVATE)
         val counts = app.getSharedPreferences("library_play_counts", Context.MODE_PRIVATE)
+        val lastPlayed = app.getSharedPreferences("library_last_played", Context.MODE_PRIVATE)
         favoritesPreferences = favorites
         countsPreferences = counts
+        lastPlayedPreferences = lastPlayed
+        _lastPlayed.value = lastPlayed.all.mapNotNull { (key, value) ->
+            (value as? Long)?.let { key to it }
+        }.toMap()
         _favorites.value = favorites.getStringSet("uris", emptySet())?.toSet().orEmpty()
         _playCounts.value = counts.all.mapNotNull { (key, value) ->
             (value as? Int)?.takeIf { it > 0 }?.let { key to it }
@@ -66,5 +76,11 @@ object LibraryInsights {
         val count = if (old == Int.MAX_VALUE) old else old + 1
         _playCounts.value = _playCounts.value + (uri to count)
         preferences.edit().putInt(uri, count).apply()
+
+        // Un solo timestamp por pista (no un historial): alcanza para ordenar "Recientes"
+        // y no crece sin control en una biblioteca de 50.000 archivos.
+        val now = System.currentTimeMillis()
+        _lastPlayed.value = _lastPlayed.value + (uri to now)
+        lastPlayedPreferences?.edit()?.putLong(uri, now)?.apply()
     }
 }

@@ -44,6 +44,8 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.FileDownload
+import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -81,6 +83,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -89,6 +92,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
+import com.kukosin.app.data.M3uPlaylist
 import com.kukosin.app.data.Playlist
 import com.kukosin.app.data.Track
 import com.kukosin.app.data.formatTime
@@ -194,6 +198,7 @@ internal fun PlaylistsCategoryView(
     onPlay: (Playlist) -> Unit,
     onCreate: () -> Unit,
     onSaveQueue: () -> Unit,
+    onImportM3u: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     bottomPadding: Int = 0,
 ) {
@@ -223,6 +228,16 @@ internal fun PlaylistsCategoryView(
                         style = MaterialTheme.typography.labelSmall,
                         color = CreamMuted,
                     )
+                }
+                if (onImportM3u != null) {
+                    IconButton(onClick = onImportM3u, modifier = Modifier.size(36.dp)) {
+                        Icon(
+                            Icons.Rounded.FileUpload,
+                            contentDescription = "Import .m3u playlist",
+                            tint = CreamMuted,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                 }
                 if (queueCount > 0) {
                     Surface(
@@ -392,6 +407,7 @@ internal fun PlaylistDetailSheet(
     onRemoveCover: () -> Unit,
     onRemoveAt: (Int) -> Unit,
     onMove: (Int, Int) -> Unit,
+    onMessage: (String) -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -416,6 +432,25 @@ internal fun PlaylistDetailSheet(
     val coverLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent(),
     ) { uri -> if (uri != null) onCoverPicked(uri) }
+
+    // Exportar: se escribe el .m3u8 donde el usuario elija (SAF), sin permisos extra.
+    val context = LocalContext.current
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("audio/x-mpegurl"),
+    ) { uri ->
+        if (uri != null) {
+            val text = M3uPlaylist.serialize(playlist.name, resolved.filterNotNull())
+            val written = runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { output ->
+                    output.write(text.toByteArray())
+                } != null
+            }.getOrDefault(false)
+            onMessage(
+                if (written) "Exported ${resolved.count { it != null }} songs to .m3u8"
+                else "Could not export the playlist",
+            )
+        }
+    }
 
     val playable = remember(resolved) { resolved.filterNotNull() }
     val durationMs = remember(playable) { playable.sumOf { it.durationMs } }
@@ -538,6 +573,14 @@ internal fun PlaylistDetailSheet(
                             onClick = {
                                 menuOpen = false
                                 onAddSongs()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export .m3u8", color = Cream) },
+                            leadingIcon = { Icon(Icons.Rounded.FileDownload, null, tint = Gold) },
+                            onClick = {
+                                menuOpen = false
+                                exportLauncher.launch("${playlist.name}.m3u8")
                             },
                         )
                         HorizontalDivider(color = Line)

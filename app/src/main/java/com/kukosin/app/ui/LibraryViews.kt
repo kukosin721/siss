@@ -10,7 +10,9 @@ import android.util.Log
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -83,12 +85,14 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Switch
@@ -121,6 +125,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -579,6 +584,24 @@ internal fun TrackList(
     val scope = rememberCoroutineScope()
     var activeLetter by remember { mutableStateOf<Char?>(null) }
 
+    // Selección múltiple: se entra manteniendo pulsada una fila. La acción de playlists
+    // viene por CompositionLocal (ver Playlists.kt), así la barra no necesita parámetros
+    // nuevos en cada lista de la app.
+    var selectionMode by remember { mutableStateOf(false) }
+    val selectedTracks = remember { mutableStateMapOf<String, Track>() }
+    val addToPlaylist = LocalAddToPlaylist.current
+
+    fun toggleSelection(track: Track) {
+        val key = track.uri.toString()
+        if (selectedTracks.remove(key) == null) selectedTracks[key] = track
+        if (selectedTracks.isEmpty()) selectionMode = false
+    }
+
+    fun clearSelection() {
+        selectedTracks.clear()
+        selectionMode = false
+    }
+
     // "Show in library": cuando llega una pista desde el reproductor, la lista
     // se desplaza sola hasta ella.
     LaunchedEffect(focusUri, tracks) {
@@ -620,18 +643,99 @@ internal fun TrackList(
                 //    acomodar sola: la lista "respira" mientras la recorrés.
                 Box(modifier = Modifier.animateItem()) {
                     RevealItem(index = index, contentKey = track.uri) {
+                        val isPicked = selectedTracks.containsKey(track.uri.toString())
                         TrackRow(
                             track = track,
                             selected = track.uri == currentUri,
                             isPlaying = isPlaying && track.uri == currentUri,
                             controller = controller,
-                            onClick = { onTrackClick(index) },
+                            onClick = {
+                                if (selectionMode) {
+                                    toggleSelection(track)
+                                } else {
+                                    onTrackClick(index)
+                                }
+                            },
+                            onLongClick = {
+                                if (!selectionMode) {
+                                    selectionMode = true
+                                    selectedTracks[track.uri.toString()] = track
+                                } else {
+                                    toggleSelection(track)
+                                }
+                            },
+                            selectionMode = selectionMode,
+                            isPicked = isPicked,
                             onInspect = { onInspectClick(track) },
                             onMessage = onMessage,
                             extraLabel = extraLabel?.invoke(track),
                             highlighted = focusUri != null && track.uri == focusUri,
                         )
                     }
+                }
+            }
+        }
+
+        // Barra de acciones de la selección múltiple.
+        androidx.compose.animation.AnimatedVisibility(
+            visible = selectionMode && selectedTracks.isNotEmpty(),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 12.dp, start = 12.dp, end = 12.dp),
+            enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.slideInVertically { it / 2 },
+            exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.slideOutVertically { it / 2 },
+        ) {
+            val picked = selectedTracks.values.toList()
+            Surface(
+                color = InkElevated,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, Gold.copy(alpha = 0.35f)),
+                shadowElevation = 8.dp,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "${picked.size}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Gold,
+                        modifier = Modifier.padding(horizontal = 10.dp),
+                    )
+                    if (addToPlaylist != null) {
+                        SelectionAction(
+                            icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
+                            label = "Add to playlist",
+                            onClick = {
+                                addToPlaylist(picked)
+                                clearSelection()
+                            },
+                        )
+                    }
+                    SelectionAction(
+                        icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                        label = "+ Queue",
+                        onClick = {
+                            val msg = QueueActions.addListToQueue(controller, picked)
+                            onMessage?.invoke(msg)
+                            clearSelection()
+                        },
+                    )
+                    SelectionAction(
+                        icon = Icons.Rounded.PlayArrow,
+                        label = "Play next",
+                        onClick = {
+                            val msg = QueueActions.addListToQueue(controller, picked, playNext = true)
+                            onMessage?.invoke(msg)
+                            clearSelection()
+                        },
+                    )
+                    SelectionAction(
+                        icon = Icons.Rounded.Close,
+                        label = "Cancel selection",
+                        onClick = { clearSelection() },
+                    )
                 }
             }
         }
@@ -661,7 +765,7 @@ internal fun TrackList(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 internal fun TrackRow(
     track: Track,
@@ -669,6 +773,9 @@ internal fun TrackRow(
     isPlaying: Boolean,
     controller: MediaController? = null,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+    selectionMode: Boolean = false,
+    isPicked: Boolean = false,
     onInspect: (() -> Unit)? = null,
     onMessage: ((String) -> Unit)? = null,
     extraLabel: String? = null,
@@ -765,14 +872,18 @@ internal fun TrackRow(
                     .background(if (selected) InkSoft else Ink.copy(alpha = 0f))
                     .background(Gold.copy(alpha = highlightAlpha))
                     .pressScale(rowInteraction, scale = 0.985f)
-                    .clickable(
+                    .combinedClickable(
                         interactionSource = rowInteraction,
                         indication = LocalIndication.current,
+                        onLongClick = onLongClick,
                         onClick = {
-                            if (artworkBounds != Rect.Zero) pressOrigin?.publish(artworkBounds)
+                            if (!selectionMode && artworkBounds != Rect.Zero) {
+                                pressOrigin?.publish(artworkBounds)
+                            }
                             onClick()
                         },
                     )
+                    .background(if (isPicked) Gold.copy(alpha = 0.12f) else Color.Transparent)
                     .padding(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -835,6 +946,14 @@ internal fun TrackRow(
                     )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (selectionMode) {
+                        Icon(
+                            if (isPicked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                            contentDescription = if (isPicked) "Selected" else "Not selected",
+                            tint = if (isPicked) Gold else CreamMuted.copy(alpha = 0.6f),
+                            modifier = Modifier.size(24.dp),
+                        )
+                    } else {
                     if (isPlaying) {
                         Icon(Icons.Rounded.GraphicEq, contentDescription = "Playing", tint = Gold, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
@@ -859,6 +978,7 @@ internal fun TrackRow(
                                 onMessage = { msg -> onMessage?.invoke(msg) },
                             )
                         }
+                    }
                     }
                 }
             }
@@ -1116,5 +1236,17 @@ internal fun FolderRow(folder: FolderNode, onClick: () -> Unit) {
             )
         }
         Icon(Icons.AutoMirrored.Rounded.NavigateNext, contentDescription = null, tint = CreamMuted)
+    }
+}
+
+/** Botón de la barra de selección múltiple (ícono + etiqueta accesible). */
+@Composable
+private fun SelectionAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    IconButton(onClick = onClick) {
+        Icon(icon, contentDescription = label, tint = Cream, modifier = Modifier.size(21.dp))
     }
 }

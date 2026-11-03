@@ -6,6 +6,7 @@ import androidx.media3.common.util.UnstableApi
 import android.Manifest
 import android.content.ComponentName
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Log
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -165,6 +166,7 @@ import com.kukosin.app.data.AlbumGroup
 import com.kukosin.app.data.ArtistGroup
 import com.kukosin.app.data.FolderNode
 import com.kukosin.app.data.LibraryInsights
+import com.kukosin.app.data.M3uPlaylist
 import com.kukosin.app.data.Playlist
 import com.kukosin.app.data.Track
 import com.kukosin.app.data.formatTime
@@ -176,6 +178,7 @@ import com.kukosin.app.playback.OutputMode
 import com.kukosin.app.playback.OutputDevice
 import com.kukosin.app.playback.PlaybackService
 import com.kukosin.app.playback.QueueManager
+import com.kukosin.app.playback.SleepTimer
 import com.kukosin.app.playback.UsbDacManager
 import com.kukosin.app.ui.theme.Cream
 import com.kukosin.app.ui.theme.CreamMuted
@@ -220,6 +223,10 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     var showSignalPath by remember { mutableStateOf(false) }
     var showQueueSheet by remember { mutableStateOf(false) }
     var userMessage by remember { mutableStateOf<String?>(null) }
+    // Temporizador de sueño: el estado vive en SleepTimer (sobrevive a la recomposición y
+    // al cambio de pista); acá sólo se refleja y se abre el diálogo.
+    var showSleepTimer by remember { mutableStateOf(false) }
+    val sleepRemainingMs by SleepTimer.remainingMs.collectAsStateWithLifecycle()
 
     // ── Playlists ──
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
@@ -285,6 +292,35 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
         if (libraryFocusUri != null) {
             delay(1900)
             libraryFocusUri = null
+        }
+    }
+
+    // Importar una lista .m3u/.m3u8: se resuelve contra la biblioteca actual y se crea
+    // una playlist nueva con lo que exista en este teléfono.
+    val m3uImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            val text = runCatching {
+                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+            }.getOrNull()
+            if (text.isNullOrBlank()) {
+                userMessage = "Could not read that file"
+            } else {
+                val uris = M3uPlaylist.parse(text, library.tracks)
+                if (uris.isEmpty()) {
+                    userMessage = "None of those songs are in this library"
+                } else {
+                    val fileName = openDocumentName(context, uri) ?: "Imported playlist"
+                    val created = viewModel.createPlaylist(M3uPlaylist.playlistNameFrom(fileName))
+                    if (created == null) {
+                        userMessage = "Could not create the playlist"
+                    } else {
+                        val added = viewModel.addUrisToPlaylist(created.id, uris)
+                        userMessage = "Imported $added songs into \"${created.name}\""
+                    }
+                }
+            }
         }
     }
 
@@ -570,7 +606,7 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
         library.selectedAlbum != null || library.selectedArtist != null ||
         library.selectedTagGroup != null || library.inspectTrack != null ||
         playlistDetailId != null || playlistPickerId != null ||
-        addToPlaylistTracks.isNotEmpty() || playlistPrompt != null
+        addToPlaylistTracks.isNotEmpty() || playlistPrompt != null || showSleepTimer
     BackHandler(enabled = !modalOpen && (!showNowPlaying || sheetProgress < 0.999f)) {
         if (sheetProgress > 0.01f) {
             animatePlayerSheet(target = 1f, fromDrag = false)
@@ -706,6 +742,7 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                                 }
                             }
                         },
+                        onImportM3u = { m3uImportLauncher.launch(arrayOf("*/*")) },
                         onCreatePlaylist = {
                             playlistPrompt = PlaylistPrompt(
                                 playlistId = null,
@@ -998,6 +1035,8 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                     activeSection = AppSection.SEARCH
                     animatePlayerSheet(target = 0f, fromDrag = false)
                 },
+                onOpenSleepTimer = { showSleepTimer = true },
+                sleepTimerActive = sleepRemainingMs > 0L,
                 onOpenSettingsShortcut = {
                     hapticTick()
                     showSettings = true
@@ -1075,6 +1114,27 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
             audioConfig = audioConfig,
             onDismiss = { showQueueSheet = false },
             onMessage = { msg -> userMessage = msg },
+        )
+    }
+
+    if (showSleepTimer) {
+        SleepTimerDialog(
+            remainingMs = sleepRemainingMs,
+            onSelectMinutes = { minutes ->
+                val current = controller
+                if (current == null) {
+                    userMessage = "The player is not ready"
+                } else {
+                    SleepTimer.start(current, minutes)
+                    userMessage = "Sleep timer: $minutes min"
+                }
+                showSleepTimer = false
+            },
+            onCancel = {
+                SleepTimer.cancel()
+                userMessage = "Sleep timer off"
+            },
+            onDismiss = { showSleepTimer = false },
         )
     }
 
@@ -1164,6 +1224,7 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                 onCoverPicked = { uri -> viewModel.setPlaylistCover(playlist.id, uri) },
                 onRemoveCover = { viewModel.clearPlaylistCover(playlist.id) },
                 onRemoveAt = { index -> viewModel.removeFromPlaylist(playlist.id, index) },
+                onMessage = { msg -> userMessage = msg },
                 onMove = { from, to -> viewModel.moveInPlaylist(playlist.id, from, to) },
                 onDismiss = { playlistDetailId = null },
             )
@@ -1488,3 +1549,11 @@ private data class PlaylistPrompt(
     val confirm: String,
     val pendingTracks: List<Track> = emptyList(),
 )
+
+/** Nombre visible de un documento elegido con SAF (para nombrar la lista importada). */
+private fun openDocumentName(context: android.content.Context, uri: android.net.Uri): String? =
+    runCatching {
+        context.contentResolver
+            .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+    }.getOrNull() ?: uri.lastPathSegment

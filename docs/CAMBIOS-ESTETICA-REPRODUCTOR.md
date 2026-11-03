@@ -159,6 +159,29 @@ defecto** hasta repararlo:
 
 El EQ y el análisis automático ya venían apagados por su cuenta.
 
+## 10. Extras: ícono, selección múltiple, recientes, temporizador y M3U
+
+- **Ícono nuevo**: la mascota (pingüino con auriculares). Se generan las cinco densidades
+  (`mdpi` a `xxxhdpi`) con esquinas redondeadas y versión circular, más el ícono
+  adaptativo de Android 8+ (el arte va de fondo y la máscara del launcher lo recorta).
+- **Selección múltiple** en las listas: mantener pulsada una fila entra en modo selección
+  (círculo ✓, se oculta el menú ⋮). La barra flotante permite **agregar a una playlist**,
+  **agregar a la cola**, **reproducir a continuación** o cancelar. Tocar una fila
+  seleccionada la desmarca; al vaciar la selección el modo se cierra solo.
+- **Recientes** (Biblioteca → Recently played): usa un timestamp de última reproducción por
+  pista (un solo valor, no un historial), ordena de más nuevo a más viejo y muestra
+  "5 min ago" / "3 h ago" / "2 d ago" en la segunda línea.
+- **Temporizador de sueño**: quinto acceso en la barra del reproductor (luna). Opciones de
+  5 a 90 min; en los últimos 8 segundos el volumen baja en rampa y después pausa y vuelve
+  al 100 %. Con uno andando queda un punto dorado en el ícono y el diálogo muestra cuánto
+  falta. Funciona igual en AudioTrack, Oboe y DAC USB porque sólo usa el volumen del
+  reproductor.
+- **M3U/M3U8**: importar desde la categoría Playlists (botón de subir) y exportar desde el
+  menú ⋮ de cada lista. Al importar, cada línea se resuelve por URI, por ruta (normalizando
+  `\` de Windows) y por nombre de archivo; lo que no está en el teléfono se descarta. Al
+  exportar se escribe `#EXTM3U` + `#EXTINF:duración,Artista - Título` + ruta del archivo,
+  que es lo que leen Poweramp, Musicolet y VLC.
+
 ## Cómo verificar
 
 No hay JDK/Android SDK en este entorno, así que no se pudo compilar acá. En una máquina
@@ -175,4 +198,6 @@ fila), mirar la onda hasta el final (sin cola plana), probar play/pausa, ±10 s,
 siguiente/anterior, EQ y shuffle/repetición, **arrastrar hacia arriba el tirador
 QUEUE** debajo de la onda (debe abrir la cola con el fondo desenfocado), y en Biblioteca →
 Playlists crear una lista, meterle canciones desde el menú ⋮ de una pista, cambiarle la
-portada y reordenarla manteniendo pulsado.
+portada y reordenarla manteniendo pulsado. También: mantener pulsada una fila para
+seleccionar varias y agregarlas de una vez, importar/exportar un `.m3u8`, y probar el
+temporizador de sueño con 5 minutos (debe bajar el volumen y pausar).

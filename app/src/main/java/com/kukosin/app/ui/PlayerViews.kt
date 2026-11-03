@@ -384,6 +384,9 @@ internal fun NowPlayingSheet(
     onOpenEqualizerShortcut: () -> Unit,
     onOpenSearchShortcut: () -> Unit,
     onOpenSettingsShortcut: () -> Unit,
+    /** Temporizador de sueño (acceso en la barra inferior). */
+    onOpenSleepTimer: () -> Unit,
+    sleepTimerActive: Boolean,
     /** Abre la cola desde el tirador que está debajo de la onda. */
     onOpenQueue: () -> Unit,
 ) {
@@ -1015,6 +1018,8 @@ internal fun NowPlayingSheet(
                 onOpenEqualizer = onOpenEqualizerShortcut,
                 onOpenSearch = onOpenSearchShortcut,
                 onOpenSettings = onOpenSettingsShortcut,
+                onOpenSleepTimer = onOpenSleepTimer,
+                sleepTimerActive = sleepTimerActive,
                 modifier = Modifier
                     .padding(top = 6.dp, bottom = 6.dp)
                     .graphicsLayer {

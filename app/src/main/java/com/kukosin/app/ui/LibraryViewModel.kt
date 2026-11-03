@@ -48,6 +48,7 @@ enum class LibraryCategory(val title: String) {
     LA_COLA("The queue"),
     FAVORITOS("Favorites"),
     MAS_REPRODUCIDO("Most played"),
+    RECIENTES("Recently played"),
 }
 
 private val filteredTracksCache =
