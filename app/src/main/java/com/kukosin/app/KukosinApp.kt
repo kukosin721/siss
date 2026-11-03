@@ -27,6 +27,10 @@ class KukosinApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        // Lo primero: si algo revienta en el arranque, el stacktrace queda guardado y la
+        // próxima apertura lo muestra en pantalla (sin PC no hay logcat que mirar).
+        CrashReport.markStart(this)
+        CrashReport.install(this)
         // Color de acento guardado por el usuario, antes de que se dibuje cualquier pantalla.
         AccentTheme.init(this)
         LibraryInsights.init(this)
