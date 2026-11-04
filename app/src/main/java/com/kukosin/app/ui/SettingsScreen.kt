@@ -2,6 +2,7 @@
 
 package com.kukosin.app.ui
 
+import com.kukosin.app.playback.AudioSettingsManager
 import com.kukosin.app.playback.ContinuityPreset
 import androidx.media3.common.util.UnstableApi
 import android.Manifest
@@ -218,6 +219,16 @@ internal fun FullScreenSettingsScreen(
     onSelectContinuity: (ContinuityPreset) -> Unit,
     volumeCurve: Int,
     onSelectVolumeCurve: (Int) -> Unit,
+    crossfadeMs: Int,
+    onSelectCrossfadeMs: (Int) -> Unit,
+    replayGainMode: Int,
+    onSelectReplayGainMode: (Int) -> Unit,
+    replayGainPreampDb: Int,
+    onSelectReplayGainPreamp: (Int) -> Unit,
+    onExportBackup: () -> Unit,
+    onImportBackup: () -> Unit,
+    showSpectrum: Boolean,
+    onToggleSpectrum: () -> Unit,
     decoder: String,
     onSelectDecoder: (String) -> Unit,
     usbPermissionGranted: Boolean,
@@ -309,10 +320,11 @@ internal fun FullScreenSettingsScreen(
                                 Text("Signal path to the DAC", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Cream)
                                 Spacer(Modifier.height(4.dp))
                                 Text(
-                                    "Five paths with their own semantics. Every mode except Disabled plays " +
-                                        "through the Oboe engine; the exclusive ones add a hard requirement and " +
-                                        "bit-perfect only exists with a DAC: the built-in speaker always goes " +
-                                        "through the phone's DSP and amplifier.",
+                                    "Five paths with their own semantics. Oboe is disabled by default while " +
+                                        "its audio problems are fixed: every mode except Disabled plays through " +
+                                        "it, the exclusive ones add a hard requirement, and bit-perfect only " +
+                                        "exists with a DAC: the built-in speaker always goes through the " +
+                                        "phone's DSP and amplifier.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = CreamMuted,
                                 )
@@ -396,7 +408,7 @@ internal fun FullScreenSettingsScreen(
                                 if (!output.isDac) {
                                     Text(
                                         "No DAC detected: exclusive output modes stay locked until a DAC is connected. " +
-                                            "Playback keeps going through the Oboe engine in Automatic mode.",
+                                            "Playback stays on the Android mixer because Oboe is disabled by default.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = Color(0xFFFFB26B),
                                     )
@@ -499,6 +511,170 @@ internal fun FullScreenSettingsScreen(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = Color(0xFFFF6B6B),
                                     )
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        Text("Visualizer", style = MaterialTheme.typography.labelLarge, color = Gold, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(6.dp))
+                        Surface(
+                            color = InkSoft,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Spectrum over the artwork", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Cream)
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            "Analyzes the audio that is already playing and draws 32 bars on top of " +
+                                                "the cover. It costs one FFT every four buffers; with it off the analysis " +
+                                                "stage does nothing at all.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = CreamMuted,
+                                        )
+                                    }
+                                    Spacer(Modifier.width(12.dp))
+                                    Switch(
+                                        checked = showSpectrum,
+                                        onCheckedChange = { hapticTick(); onToggleSpectrum() },
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        Text("Backup", style = MaterialTheme.typography.labelLarge, color = Gold, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(6.dp))
+                        Surface(
+                            color = InkSoft,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text("Save or move your library data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Cream)
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "One JSON file with playlists, favorites, play counts, the equalizer and your " +
+                                        "settings. Restoring only adds: nothing already on the phone is deleted, and a " +
+                                        "playlist with the same name just gets the missing songs.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = CreamMuted,
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    SettingsChip(
+                                        label = "Export backup",
+                                        selected = false,
+                                        modifier = Modifier.weight(1f),
+                                        onClick = { hapticTick(); onExportBackup() },
+                                    )
+                                    SettingsChip(
+                                        label = "Restore",
+                                        selected = false,
+                                        modifier = Modifier.weight(1f),
+                                        onClick = { hapticTick(); onImportBackup() },
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        Text("Track Transitions & Volume", style = MaterialTheme.typography.labelLarge, color = Gold, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(6.dp))
+                        Surface(
+                            color = InkSoft,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text("Crossfade", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Cream)
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "Fades the tail of a track into the head of the next one instead of cutting " +
+                                        "abruptly. Albums that are meant to run together still play gapless: pick Off " +
+                                        "for a live recording or a DJ mix.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = CreamMuted,
+                                )
+                                Spacer(Modifier.height(10.dp))
+                                AudioSettingsManager.CROSSFADE_OPTIONS.chunked(4).forEach { row ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        row.forEach { option ->
+                                            SettingsChip(
+                                                label = when {
+                                                    option == 0 -> "Off"
+                                                    option % 1000 == 0 -> "${option / 1000}s"
+                                                    else -> "${option / 1000f}s"
+                                                },
+                                                selected = crossfadeMs == option,
+                                                modifier = Modifier.weight(1f),
+                                                onClick = { onSelectCrossfadeMs(option) },
+                                            )
+                                        }
+                                        repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
+                                    }
+                                    Spacer(Modifier.height(8.dp))
+                                }
+
+                                Spacer(Modifier.height(10.dp))
+                                Text("ReplayGain", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Cream)
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "Reads REPLAYGAIN_TRACK_GAIN / REPLAYGAIN_ALBUM_GAIN from the files and evens out " +
+                                        "the loudness between tracks so you stop reaching for the volume slider. Album " +
+                                        "mode keeps the intended dynamics of a record; files without the tag are left alone.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = CreamMuted,
+                                )
+                                Spacer(Modifier.height(10.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    listOf(0 to "Off", 1 to "Track", 2 to "Album").forEach { (mode, label) ->
+                                        SettingsChip(
+                                            label = label,
+                                            selected = replayGainMode == mode,
+                                            modifier = Modifier.weight(1f),
+                                            onClick = { onSelectReplayGainMode(mode) },
+                                        )
+                                    }
+                                }
+                                if (replayGainMode != 0) {
+                                    Spacer(Modifier.height(14.dp))
+                                    Text("Pre-amp", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Cream)
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        "Added on top of the tag, in dB. Raise it if the whole library still feels quiet.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = CreamMuted,
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        AudioSettingsManager.PREAMP_OPTIONS.forEach { db ->
+                                            SettingsChip(
+                                                label = if (db > 0) "+$db" else "$db",
+                                                selected = replayGainPreampDb == db,
+                                                modifier = Modifier.weight(1f),
+                                                onClick = { onSelectReplayGainPreamp(db) },
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1100,6 +1276,30 @@ internal fun FullScreenSettingsScreen(
 }
 
 /** Fila etiqueta/valor del panel del motor. */
+@Composable
+private fun SettingsChip(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Surface(
+        color = if (selected) Gold else Ink,
+        shape = RoundedCornerShape(10.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Gold),
+        modifier = modifier.clickable { onClick() },
+    ) {
+        Text(
+            text = label,
+            color = if (selected) Ink else Gold,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
 @Composable
 internal fun SettingsStatusLine(label: String, value: String, highlight: Boolean = false) {
     Row(

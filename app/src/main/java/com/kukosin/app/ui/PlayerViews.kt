@@ -15,6 +15,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -86,6 +87,9 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Repeat
+import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material.icons.rounded.Search
@@ -115,6 +119,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -139,6 +144,7 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -275,7 +281,12 @@ internal fun MiniPlayer(
                     Box(
                         modifier = Modifier
                             .size(48.dp)
-                            .graphicsLayer { alpha = if (sheetProgress > 0.001f) 0f else 1f },
+                            // Se desvanece en los primeros 18 % del recorrido en vez de
+                            // desaparecer en el primer frame: si la portada sale desde una
+                            // fila, el dock no pierde su miniatura de golpe.
+                            .graphicsLayer {
+                                alpha = (1f - sheetProgress / 0.18f).coerceIn(0f, 1f)
+                            },
                     ) {
                         Artwork(track, Modifier.fillMaxSize())
                     }
@@ -351,7 +362,7 @@ internal fun NowPlayingSheet(
     maxArtDp: Dp,
     waveformHeight: Dp,
     playPauseScale: Float,
-    miniArtRectProvider: () -> Rect,
+    artOriginRectProvider: () -> Rect,
     fullArtSlotRectProvider: () -> Rect,
     onFullArtSlotMeasured: (LayoutCoordinates) -> Unit,
     onLyricsArtSlotMeasured: (LayoutCoordinates) -> Unit,
@@ -373,6 +384,11 @@ internal fun NowPlayingSheet(
     onOpenEqualizerShortcut: () -> Unit,
     onOpenSearchShortcut: () -> Unit,
     onOpenSettingsShortcut: () -> Unit,
+    /** Temporizador de sueño (acceso en la barra inferior). */
+    onOpenSleepTimer: () -> Unit,
+    sleepTimerActive: Boolean,
+    /** Abre la cola desde el tirador que está debajo de la onda. */
+    onOpenQueue: () -> Unit,
 ) {
     var position by remember(controller) { mutableLongStateOf(controller?.currentPosition ?: 0L) }
     // Durante el arrastre, el reloj que se dibuja es el del dedo (no el del player):
@@ -392,6 +408,27 @@ internal fun NowPlayingSheet(
     var sheetCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var centerArtRect by remember { mutableStateOf(Rect.Zero) }
     var cornerArtRect by remember { mutableStateOf(Rect.Zero) }
+
+    // Repetir y aleatorio se muestran como botones de la fila de acciones (como en el
+    // reproductor de referencia). Se escucha al player para que el icono cambie también
+    // cuando el modo se cambia desde otra pantalla (p. ej. la cola).
+    var repeatMode by remember(controller) {
+        mutableIntStateOf(controller?.repeatMode ?: Player.REPEAT_MODE_OFF)
+    }
+    // El aleatorio de Kukosin reordena la cola real, así que su estado vive en
+    // QueueManager (no en `shuffleModeEnabled` de ExoPlayer, que queda apagado).
+    val shuffleOn by QueueManager.shuffleEnabled.collectAsState()
+    DisposableEffect(controller) {
+        val player = controller ?: return@DisposableEffect onDispose { }
+        val listener = object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                repeatMode = player.repeatMode
+            }
+        }
+        player.addListener(listener)
+        repeatMode = player.repeatMode
+        onDispose { player.removeListener(listener) }
+    }
 
     // Los gestos largos leen siempre los callbacks y progresos más recientes, sin reiniciar
     // pointerInput a mitad del arrastre cuando cambia el progreso de letras o del reproductor.
@@ -685,7 +722,7 @@ internal fun NowPlayingSheet(
                 .graphicsLayer {
                     val p = sheetProgress.coerceIn(0f, 1f)
                     val full = fullArtSlotRectProvider()
-                    val current = lerpRect(miniArtRectProvider(), full, p)
+                    val current = lerpRect(artOriginRectProvider(), full, p)
                     translationY = (current.top - full.top).coerceAtLeast(0f)
                     alpha = ((p - 0.04f) / 0.76f).coerceIn(0f, 1f)
                     val topCorner = 28.dp * (1f - p)
@@ -703,9 +740,10 @@ internal fun NowPlayingSheet(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
+                .padding(horizontal = 12.dp, vertical = 2.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // ── Cabecera: asa, minimizar, estado y favorito ─────────────────
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -713,7 +751,7 @@ internal fun NowPlayingSheet(
                     .graphicsLayer {
                         val p = sheetProgress.coerceIn(0f, 1f)
                         val full = fullArtSlotRectProvider()
-                        val current = lerpRect(miniArtRectProvider(), full, p)
+                        val current = lerpRect(artOriginRectProvider(), full, p)
                         translationY = (current.top - full.top).coerceAtLeast(0f)
                         alpha = ((p - 0.12f) / 0.72f).coerceIn(0f, 1f)
                     },
@@ -721,30 +759,46 @@ internal fun NowPlayingSheet(
             ) {
                 Box(
                     modifier = Modifier
-                        .padding(top = 6.dp, bottom = 2.dp)
+                        .padding(top = 2.dp)
                         .width(38.dp)
-                        .height(4.5.dp)
+                        .height(3.dp)
                         .clip(RoundedCornerShape(50))
                         .background(CreamMuted.copy(alpha = 0.45f)),
                 )
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().height(44.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = onDismiss, enabled = interactiveEnabled) {
-                        Icon(Icons.Rounded.KeyboardArrowDown, "Minimize", tint = CreamMuted, modifier = Modifier.size(32.dp))
+                    IconButton(
+                        onClick = onDismiss,
+                        enabled = interactiveEnabled,
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Icon(Icons.Rounded.KeyboardArrowDown, "Minimize", tint = CreamMuted, modifier = Modifier.size(30.dp))
                     }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
                         Text("NOW PLAYING", style = MaterialTheme.typography.labelMedium, color = Gold, fontWeight = FontWeight.Bold)
                         Text(
-                            if (track == null) "Your music" else if (track.isLocal) "Local music" else "YouTube Music",
+                            text = when {
+                                track == null -> if (isScanning) "Scanning your library…" else "Your music"
+                                else -> "${track.qualityLabel} · ${output.name}"
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = CreamMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                     if (track?.isLocal == true) {
-                        IconButton(onClick = onToggleFavorite, enabled = interactiveEnabled) {
+                        IconButton(
+                            onClick = onToggleFavorite,
+                            enabled = interactiveEnabled,
+                            modifier = Modifier.size(44.dp),
+                        ) {
                             Icon(
                                 imageVector = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                                 contentDescription = if (isFavorite) "Remove from favorites" else "Add to favorites",
@@ -753,18 +807,21 @@ internal fun NowPlayingSheet(
                             )
                         }
                     } else {
-                        Spacer(Modifier.size(48.dp))
+                        Spacer(Modifier.size(44.dp))
                     }
                 }
             }
 
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(2.dp))
+
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 Column(
                     modifier = Modifier.fillMaxSize(),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
+                    verticalArrangement = Arrangement.Top,
                 ) {
+                    // La carátula es la protagonista: ocupa casi todo el ancho, con
+                    // las esquinas redondeadas y el mismo rectángulo que usa el morph.
                     Box(
                         modifier = Modifier
                             .size(maxArtDp)
@@ -786,6 +843,7 @@ internal fun NowPlayingSheet(
                             // song highlighted; lyrics open with an upward swipe.
                             .clickable(enabled = interactiveEnabled, onClick = onShowInLibrary),
                     )
+
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -793,70 +851,44 @@ internal fun NowPlayingSheet(
                                 val p = sheetProgress.coerceIn(0f, 1f)
                                 val lp = lyricsProgress.coerceIn(0f, 1f)
                                 val full = fullArtSlotRectProvider()
-                                val current = lerpRect(miniArtRectProvider(), full, p)
-                                translationY = current.bottom - full.bottom - 30.dp.toPx() * lp
+                                val current = lerpRect(artOriginRectProvider(), full, p)
+                                translationY = current.bottom - full.bottom - 24.dp.toPx() * lp
                                 translationX = -20.dp.toPx() * lp
                                 alpha = ((p - 0.10f) / 0.72f).coerceIn(0f, 1f) * (1f - lp * 1.4f).coerceIn(0f, 1f)
                             },
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            text = track?.title ?: "Your music starts here",
-                            style = MaterialTheme.typography.headlineSmall,
-                            color = Cream,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.Center,
-                        )
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            text = track?.let { "${it.effectiveArtist} — ${it.album}" }
-                                ?: if (isScanning) "Scanning your library…" else "Pick a song from Library or Search",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = CreamMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.Center,
-                        )
-                        Spacer(Modifier.height(5.dp))
-                        if (track != null) {
-                            Surface(
-                                color = InkSoft,
-                                shape = RoundedCornerShape(10.dp),
-                                border = BorderStroke(1.dp, Gold.copy(alpha = 0.42f)),
-                                modifier = Modifier.clickable(enabled = interactiveEnabled, onClick = onOpenSignalPath),
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Icon(
-                                        if (output.isDac) Icons.Rounded.Usb else Icons.Rounded.GraphicEq,
-                                        contentDescription = null,
-                                        tint = Gold,
-                                        modifier = Modifier.size(16.dp),
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(
-                                        "${track.qualityLabel} · ${output.name}",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = Gold,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
+                        // Título y artista en "chips" alineados a la izquierda, como el
+                        // reproductor de referencia, pero con el dorado de la app.
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp),
+                            horizontalAlignment = Alignment.Start,
+                        ) {
+                            Spacer(Modifier.height(8.dp))
+                            NowPlayingPill(
+                                text = track?.title ?: "Your music starts here",
+                                primary = true,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            NowPlayingPill(
+                                text = track?.let { "${it.effectiveArtist} — ${it.album}" }
+                                    ?: if (isScanning) "Scanning your library…" else "Pick a song from Library or Search",
+                                primary = false,
+                            )
+                            if (!hasPermission) {
+                                Spacer(Modifier.height(8.dp))
+                                Button(
+                                    onClick = onRequestPermission,
+                                    colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Ink),
+                                    shape = RoundedCornerShape(12.dp),
+                                ) { Text("Allow audio access") }
                             }
-                        } else if (!hasPermission) {
-                            Button(
-                                onClick = onRequestPermission,
-                                colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Ink),
-                                shape = RoundedCornerShape(12.dp),
-                            ) { Text("Allow audio access") }
                         }
-                        Spacer(Modifier.height(10.dp))
+
+                        Spacer(Modifier.height(8.dp))
+
                         KukosinWaveformSlider(
                             progress = if (duration > 0) position.toFloat() / duration else 0f,
                             onSeek = { fraction ->
@@ -889,20 +921,28 @@ internal fun NowPlayingSheet(
                             },
                             onPrev = { if (interactiveEnabled) controller?.seekToPrevious() },
                             onNext = { if (interactiveEnabled) controller?.seekToNext() },
-                            onShuffle = { if (interactiveEnabled && controller != null) QueueManager.toggleShuffle(controller) },
-                            onRepeat = {
-                                if (interactiveEnabled && controller != null) {
-                                    controller.repeatMode = when (controller.repeatMode) {
-                                        Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                                        Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                                        else -> Player.REPEAT_MODE_OFF
-                                    }
+                            onRewind = {
+                                val player = controller
+                                if (interactiveEnabled && player != null) {
+                                    player.seekTo((player.currentPosition - 10_000L).coerceAtLeast(0L))
                                 }
+                            },
+                            onForward = {
+                                val player = controller
+                                if (interactiveEnabled && player != null) {
+                                    val total = player.duration.coerceAtLeast(0L)
+                                    val target = player.currentPosition + 10_000L
+                                    player.seekTo(if (total > 0L) target.coerceAtMost(total) else target)
+                                }
+                            },
+                            onOpenQueue = onOpenQueue.takeIf {
+                                controller != null && track != null && interactiveEnabled
                             },
                             positionLabel = formatTime(position),
                             durationLabel = formatTime(duration),
                             modifier = Modifier.fillMaxWidth(),
                         )
+
                     }
                 }
 
@@ -978,12 +1018,14 @@ internal fun NowPlayingSheet(
                 onOpenEqualizer = onOpenEqualizerShortcut,
                 onOpenSearch = onOpenSearchShortcut,
                 onOpenSettings = onOpenSettingsShortcut,
+                onOpenSleepTimer = onOpenSleepTimer,
+                sleepTimerActive = sleepTimerActive,
                 modifier = Modifier
-                    .padding(top = 8.dp, bottom = 8.dp)
+                    .padding(top = 6.dp, bottom = 6.dp)
                     .graphicsLayer {
                         val p = sheetProgress.coerceIn(0f, 1f)
                         val full = fullArtSlotRectProvider()
-                        val current = lerpRect(miniArtRectProvider(), full, p)
+                        val current = lerpRect(artOriginRectProvider(), full, p)
                         translationY = current.bottom - full.bottom
                         alpha = ((p - 0.25f) / 0.65f).coerceIn(0f, 1f)
                     },
@@ -1019,8 +1061,190 @@ internal fun NowPlayingSheet(
                 offsetX = dragX,
                 alpha = artworkAlpha,
                 blur = artworkBlur,
+                overlay = {
+                    // Acciones sobre la carátula, como en el reproductor de referencia:
+                    // EQ y ruta de señal a la izquierda; repetir y aleatorio a la derecha.
+                    // Se ocultan al abrir las letras, cuando la carátula se hace chica.
+                    if (lp < 0.05f) {
+                        PlayerArtworkActions(
+                            enabled = interactiveEnabled,
+                            repeatMode = repeatMode,
+                            shuffleOn = shuffleOn,
+                            isDac = output.isDac,
+                            onOpenEqualizer = onOpenEqualizerShortcut,
+                            onOpenSignalPath = onOpenSignalPath,
+                            onToggleRepeat = {
+                                val player = controller
+                                if (interactiveEnabled && player != null) {
+                                    val next = when (repeatMode) {
+                                        Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                                        Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                                        else -> Player.REPEAT_MODE_OFF
+                                    }
+                                    repeatMode = next
+                                    player.repeatMode = next
+                                }
+                            },
+                            onToggleShuffle = {
+                                val player = controller
+                                if (interactiveEnabled && player != null) {
+                                    QueueManager.toggleShuffle(player)
+                                }
+                            },
+                            modifier = Modifier.align(Alignment.BottomCenter),
+                        )
+                    }
+                },
             )
         }
+    }
+}
+
+/**
+ * Acciones flotantes en la parte baja de la carátula. Es el equivalente a los iconos
+ * que el reproductor de referencia superpone a la portada, pero con las funciones que
+ * esta app sí tiene: ecualizador, ruta de señal, repetir y aleatorio.
+ */
+@Composable
+private fun PlayerArtworkActions(
+    enabled: Boolean,
+    repeatMode: Int,
+    shuffleOn: Boolean,
+    isDac: Boolean,
+    onOpenEqualizer: () -> Unit,
+    onOpenSignalPath: () -> Unit,
+    onToggleRepeat: () -> Unit,
+    onToggleShuffle: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // La carátula aparece recién cuando el morph termina (p ≥ 0.998): un fundido
+    // corto evita que los botones "salten" encima de la portada en el último frame.
+    val actionsAlpha = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { actionsAlpha.animateTo(1f, tween(durationMillis = 220)) }
+    Box(
+        modifier = modifier
+            .graphicsLayer { alpha = actionsAlpha.value }
+            .fillMaxWidth()
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color.Transparent, Ink.copy(alpha = 0.72f)),
+                ),
+            )
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                PlayerRoundAction(
+                    icon = Icons.Rounded.GraphicEq,
+                    contentDescription = "Equalizer",
+                    enabled = enabled,
+                    onClick = onOpenEqualizer,
+                )
+                Spacer(Modifier.width(8.dp))
+                PlayerRoundAction(
+                    icon = if (isDac) Icons.Rounded.Usb else Icons.Rounded.Headphones,
+                    contentDescription = "Signal path",
+                    enabled = enabled,
+                    onClick = onOpenSignalPath,
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                PlayerRoundAction(
+                    icon = if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
+                    contentDescription = when (repeatMode) {
+                        Player.REPEAT_MODE_ONE -> "Repeat one song"
+                        Player.REPEAT_MODE_ALL -> "Repeat queue"
+                        else -> "Repeat off"
+                    },
+                    enabled = enabled,
+                    active = repeatMode != Player.REPEAT_MODE_OFF,
+                    onClick = onToggleRepeat,
+                )
+                Spacer(Modifier.width(8.dp))
+                PlayerRoundAction(
+                    icon = Icons.Rounded.Shuffle,
+                    contentDescription = if (shuffleOn) "Disable shuffle" else "Enable shuffle",
+                    enabled = enabled,
+                    active = shuffleOn,
+                    onClick = onToggleShuffle,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Etiqueta tipo "chip" del reproductor: título y artista/álbum, alineados a la
+ * izquierda. El fondo usa el acento de la app al 18 % para que se lea sobre la
+ * carátula sin competir con ella.
+ */
+@Composable
+private fun NowPlayingPill(
+    text: String,
+    primary: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(if (primary) 15.dp else 13.dp)
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(Gold.copy(alpha = if (primary) 0.18f else 0.10f))
+            .border(
+                1.dp,
+                Gold.copy(alpha = if (primary) 0.38f else 0.20f),
+                shape,
+            )
+            .padding(horizontal = 14.dp, vertical = if (primary) 6.dp else 4.dp),
+    ) {
+        Text(
+            text = text,
+            style = if (primary) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
+            color = if (primary) Cream else CreamMuted,
+            fontWeight = if (primary) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** Botón redondo de la fila de acciones del reproductor. */
+@Composable
+private fun PlayerRoundAction(
+    icon: ImageVector,
+    contentDescription: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    active: Boolean = false,
+) {
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier
+            .size(44.dp)
+            .background(
+                if (active) Gold.copy(alpha = 0.18f) else InkSoft.copy(alpha = 0.92f),
+                CircleShape,
+            )
+            .border(
+                1.dp,
+                if (active) Gold.copy(alpha = 0.55f) else Gold.copy(alpha = 0.18f),
+                CircleShape,
+            ),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = when {
+                !enabled -> CreamMuted.copy(alpha = 0.35f)
+                active -> Gold
+                else -> Cream.copy(alpha = 0.82f)
+            },
+            modifier = Modifier.size(21.dp),
+        )
     }
 }
 
@@ -1109,7 +1333,7 @@ internal fun SharedTransitionArtwork(
     isSheetDragging: Boolean,
     wasSheetDragged: Boolean,
     baseArtDp: Dp,
-    miniArtRectProvider: () -> Rect,
+    artOriginRectProvider: () -> Rect,
     fullArtSlotRectProvider: () -> Rect,
 ) {
     val p = sheetProgress.coerceIn(0f, 1f)
@@ -1120,7 +1344,10 @@ internal fun SharedTransitionArtwork(
     // transición. Se elige un valor por estado y `animateDpAsState` hace el cruce una
     // sola vez, cuando cambia el estado.
     val targetBlurVal = when {
-        p <= 0.002f || p >= 0.998f -> 0f
+        // El blur se apaga bastante antes del relevo con la carátula grande (0.998):
+        // si se apagara recién ahí, esa capa se retiraba con ~5 dp de blur y la
+        // portada aparecía nítida de golpe en el último frame.
+        p <= 0.002f || p >= 0.82f -> 0f
         isSheetDragging -> 14f * blurScale
         wasSheetDragged -> 9f * blurScale
         else -> 5f * blurScale
@@ -1138,7 +1365,9 @@ internal fun SharedTransitionArtwork(
             .size(baseArtDp)
             .graphicsLayer {
                 val prog = sheetProgress.coerceIn(0f, 1f)
-                val miniR = miniArtRectProvider()
+                val miniR = artOriginRectProvider()
+                // `resolveFullArtSlotRect` ya trae el `playPauseScale` aplicado, igual
+                // que el slot de `PlayerMorphingArtwork`: no hay que escalarlo de nuevo.
                 val fullR = fullArtSlotRectProvider()
                 val curR = lerpRect(miniR, fullR, prog)
                 val basePx = baseArtDp.toPx().coerceAtLeast(1f)
@@ -1153,7 +1382,12 @@ internal fun SharedTransitionArtwork(
                 val desiredCornerDp = 12.dp + (fullCorner - 12.dp) * prog
                 shape = RoundedCornerShape(desiredCornerDp / sx)
                 clip = true
-                shadowElevation = (4.dp + 20.dp * sin(prog * PI).toFloat()).toPx()
+                // La sombra "florece" en el aire y se apaga al llegar. Sin ese fundido,
+                // al cruzar el 99.8 % (donde manda la carátula grande, que no tiene
+                // sombra) la portada perdía 4 dp de golpe y se notaba un salto.
+                val shadowFade = (minOf(prog, 1f - prog) / 0.10f).coerceIn(0f, 1f)
+                val shadowBloom = sin(prog * PI).toFloat().coerceIn(0f, 1f)
+                shadowElevation = (4.dp.toPx() + 20.dp.toPx() * shadowBloom) * shadowFade
             },
     ) {
         Box(
@@ -1188,6 +1422,8 @@ internal fun PlayerMorphingArtwork(
     alpha: Float,
     blur: Dp,
     artworkOverride: Uri? = null,
+    /** Contenido dibujado sobre la carátula (acciones). Viaja y escala con ella. */
+    overlay: @Composable BoxScope.() -> Unit = {},
 ) {
     Box(
         modifier = Modifier
@@ -1218,6 +1454,17 @@ internal fun PlayerMorphingArtwork(
                 .fillMaxSize()
                 .then(if (blur > 0.2.dp) Modifier.blur(blur, edgeTreatment = BlurredEdgeTreatment.Rectangle) else Modifier),
         )
+        if (UiSettingsManager.current().showSpectrum && lyricsProgress < 0.15f) {
+            SpectrumBars(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(start = 18.dp, end = 18.dp, bottom = 16.dp)
+                    .height(64.dp)
+                    .graphicsLayer { alpha = (1f - lyricsProgress * 4f).coerceIn(0f, 1f) },
+            )
+        }
+        overlay()
     }
 }
 

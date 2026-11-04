@@ -58,7 +58,9 @@ import androidx.compose.material.icons.rounded.DateRange
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MusicNote
@@ -121,6 +123,7 @@ import com.kukosin.app.data.ArtistGroup
 import com.kukosin.app.data.FolderNode
 import com.kukosin.app.data.LibraryInsights
 import com.kukosin.app.data.TagCategoryGroup
+import com.kukosin.app.data.Playlist
 import com.kukosin.app.data.Track
 import com.kukosin.app.data.formatTime
 import com.kukosin.app.data.ytm.YtmTrack
@@ -148,7 +151,7 @@ internal enum class AppSection {
  * Es una sola pieza (un "segmented control"): los iconos van unidos dentro del mismo
  * contenedor y separados por divisores finos, sin texto. Antes cada acceso era una
  * tarjeta con etiqueta de dos líneas, que ocupaba 64 dp y competía visualmente con la
- * onda; ahora la barra mide 54 dp, se lee de un vistazo y deja respirar al reproductor.
+ * onda; ahora la barra mide 50 dp, se lee de un vistazo y deja respirar al reproductor.
  */
 @Composable
 internal fun PlayerShortcutBar(
@@ -157,6 +160,9 @@ internal fun PlayerShortcutBar(
     onOpenEqualizer: () -> Unit,
     onOpenSearch: () -> Unit,
     onOpenSettings: () -> Unit,
+    /** Temporizador de sueño; si es `null` el acceso no se dibuja. */
+    onOpenSleepTimer: (() -> Unit)? = null,
+    sleepTimerActive: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -168,7 +174,7 @@ internal fun PlayerShortcutBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(54.dp),
+                .height(50.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             ShortcutIconButton(
@@ -195,6 +201,17 @@ internal fun PlayerShortcutBar(
                 modifier = Modifier.weight(1f),
             )
             ShortcutDivider()
+            if (onOpenSleepTimer != null) {
+                ShortcutIconButton(
+                    icon = Icons.Rounded.Bedtime,
+                    label = "Sleep timer",
+                    enabled = enabled,
+                    active = sleepTimerActive,
+                    onClick = onOpenSleepTimer,
+                    modifier = Modifier.weight(1f),
+                )
+                ShortcutDivider()
+            }
             ShortcutIconButton(
                 icon = Icons.Rounded.Settings,
                 label = "Settings",
@@ -224,6 +241,7 @@ private fun ShortcutIconButton(
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    active: Boolean = false,
 ) {
     val interaction = remember { MutableInteractionSource() }
     Box(
@@ -244,6 +262,17 @@ private fun ShortcutIconButton(
             tint = if (enabled) Gold else CreamMuted.copy(alpha = 0.38f),
             modifier = Modifier.size(22.dp),
         )
+        // Punto de "hay un temporizador andando": se ve sin abrir el diálogo.
+        if (active && enabled) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 11.dp, end = 16.dp)
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(Gold),
+            )
+        }
     }
 }
 
@@ -279,6 +308,13 @@ internal fun PowerampLibraryWorkspace(
     onInspectTrack: (Track) -> Unit,
     onMessage: (String) -> Unit,
     onSortChange: (LibrarySort) -> Unit,
+    /** Playlists del usuario y acciones para gestionarlas (viven en `PlaylistStore`). */
+    playlists: List<Playlist> = emptyList(),
+    onOpenPlaylist: (Playlist) -> Unit = {},
+    onPlayPlaylist: (Playlist) -> Unit = {},
+    onCreatePlaylist: () -> Unit = {},
+    onSaveQueueAsPlaylist: () -> Unit = {},
+    onImportM3u: (() -> Unit)? = null,
     /** Pista a resaltar y a la que hay que desplazar la lista (viene del reproductor). */
     focusUri: Uri? = null,
     modifier: Modifier = Modifier,
@@ -286,6 +322,11 @@ internal fun PowerampLibraryWorkspace(
     val activeCategory = library.activeCategory
     val queueSnapshot = rememberQueueSnapshot(controller, library.tracks)
     val queueCount = queueSnapshot.totalCount
+    // Resolver las URIs de una playlist contra la biblioteca actual: la metadata y las
+    // carátulas salen siempre del archivo real, no de una copia guardada.
+    val tracksByUri = remember(library.tracks) {
+        library.tracks.associateBy { it.uri.toString() }
+    }
     val favoriteUris by LibraryInsights.favorites.collectAsStateWithLifecycle()
     val playCounts by LibraryInsights.playCounts.collectAsStateWithLifecycle()
     val favoriteTracks = remember(library.tracks, library.query, favoriteUris) {
@@ -302,6 +343,15 @@ internal fun PowerampLibraryWorkspace(
     }
     val playedCount = remember(library.tracks, playCounts) {
         library.tracks.count { (playCounts[it.uri.toString()] ?: 0) > 0 }
+    }
+    val lastPlayed by LibraryInsights.lastPlayed.collectAsStateWithLifecycle()
+    val recentTracks = remember(library.filteredTracks, lastPlayed) {
+        library.filteredTracks
+            .filter { lastPlayed.containsKey(it.uri.toString()) }
+            .sortedByDescending { lastPlayed[it.uri.toString()] ?: 0L }
+    }
+    val recentCount = remember(library.tracks, lastPlayed) {
+        library.tracks.count { lastPlayed.containsKey(it.uri.toString()) }
     }
 
     Column(
@@ -458,6 +508,8 @@ internal fun PowerampLibraryWorkspace(
                     queueCount,
                     favoriteCount,
                     playedCount,
+                    playlists,
+                    recentCount,
                 ) {
                     listOf(
                         CategoryCardSpec(
@@ -503,8 +555,11 @@ internal fun PowerampLibraryWorkspace(
                         CategoryCardSpec(
                             category = LibraryCategory.LISTAS_DE_REPRODUCCION,
                             icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
-                            subtitle = "Custom playlists",
-                            badge = "Soon",
+                            subtitle = when (playlists.size) {
+                                0 -> "Create your first playlist"
+                                1 -> "1 playlist · ${playlists.first().size} songs"
+                                else -> "${playlists.size} playlists"
+                            },
                         ),
                         CategoryCardSpec(
                             category = LibraryCategory.LA_COLA,
@@ -520,6 +575,15 @@ internal fun PowerampLibraryWorkspace(
                             category = LibraryCategory.MAS_REPRODUCIDO,
                             icon = Icons.Rounded.Star,
                             subtitle = "$playedCount tracks played",
+                        ),
+                        CategoryCardSpec(
+                            category = LibraryCategory.RECIENTES,
+                            icon = Icons.Rounded.History,
+                            subtitle = when (recentCount) {
+                                0 -> "Nothing played yet"
+                                1 -> "1 track played"
+                                else -> "$recentCount tracks played"
+                            },
                         ),
                     )
                 }
@@ -779,11 +843,19 @@ internal fun PowerampLibraryWorkspace(
                             }
 
                             LibraryCategory.LISTAS_DE_REPRODUCCION -> {
-                                UpcomingCategoryPlaceholder(
-                                    icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
-                                    title = "Playlists",
-                                    description = "Here you can create your own playlists, save current queues and import M3U/M3U8 files. Their logic will be implemented in the next step.",
+                                PlaylistsCategoryView(
+                                    playlists = playlists,
+                                    tracksOf = { playlist ->
+                                        playlist.trackUris.mapNotNull { uri -> tracksByUri[uri] }
+                                    },
+                                    queueCount = queueCount,
+                                    onOpen = onOpenPlaylist,
+                                    onPlay = onPlayPlaylist,
+                                    onCreate = onCreatePlaylist,
+                                    onSaveQueue = onSaveQueueAsPlaylist,
+                                    onImportM3u = onImportM3u,
                                     modifier = Modifier.weight(1f),
+                                    bottomPadding = bottomPadding,
                                 )
                             }
 
@@ -832,6 +904,34 @@ internal fun PowerampLibraryWorkspace(
                                         extraLabel = { track ->
                                             val count = playCounts[track.uri.toString()] ?: 0
                                             "$count ${if (count == 1) "play" else "plays"}"
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        bottomPadding = bottomPadding,
+                                    )
+                                }
+                            }
+
+                            LibraryCategory.RECIENTES -> {
+                                SearchField(query = library.query, onQueryChange = onQueryChange)
+                                if (recentTracks.isEmpty() && library.query.isBlank()) {
+                                    UpcomingCategoryPlaceholder(
+                                        icon = Icons.Rounded.History,
+                                        title = "Nothing played yet",
+                                        description = "Songs show up here as soon as you play them, newest first.",
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                } else {
+                                    TrackList(
+                                        tracks = recentTracks,
+                                        currentUri = currentUri,
+                                        isPlaying = isPlaying,
+                                        controller = controller,
+                                        onTrackClick = { index -> onTrackClick(recentTracks, index) },
+                                        onInspectClick = onInspectTrack,
+                                        onMessage = onMessage,
+                                        extraLabel = { track ->
+                                            val stamp = lastPlayed[track.uri.toString()] ?: 0L
+                                            relativeTime(stamp)
                                         },
                                         modifier = Modifier.weight(1f),
                                         bottomPadding = bottomPadding,
@@ -1549,5 +1649,18 @@ private fun SortMenuButton(current: LibrarySort, onSelect: (LibrarySort) -> Unit
                 )
             }
         }
+    }
+}
+
+/** "hace 5 min" en el idioma de la app: corto, para la segunda línea de una fila. */
+private fun relativeTime(timestampMs: Long): String {
+    if (timestampMs <= 0L) return "played"
+    val minutes = ((System.currentTimeMillis() - timestampMs) / 60_000L).coerceAtLeast(0L)
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "$minutes min ago"
+        minutes < 60 * 24 -> "${minutes / 60} h ago"
+        minutes < 60 * 24 * 7 -> "${minutes / (60 * 24)} d ago"
+        else -> "${minutes / (60 * 24 * 7)} w ago"
     }
 }

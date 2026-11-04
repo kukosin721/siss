@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -332,12 +333,27 @@ fun QueueSheet(
         measuredRowHeightPx = 0f
     }
 
+    // Cerrar desde el botón (o desde cualquier acción interna) baja la hoja con su
+    // animación en vez de desaparecer de golpe; recién después el dueño la saca de la
+    // composición. Así el blur del fondo se apaga junto con el deslizamiento.
+    val dismissSmoothly: () -> Unit = {
+        scope.launch {
+            runCatching { sheetState.hide() }
+            onDismiss()
+        }
+    }
+
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = dismissSmoothly,
         sheetState = sheetState,
-        containerColor = Ink,
+        // Un pelín translúcida + 88 % de alto: deja ver la carátula del reproductor
+        // (desenfocada por PlayerApp) arriba y a través del fondo. Antes era una hoja
+        // opaca a pantalla completa y el blur no se veía en ningún lado.
+        containerColor = Ink.copy(alpha = 0.95f),
         contentColor = Cream,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .fillMaxHeight(0.88f),
     ) {
         Column(
             modifier = Modifier
@@ -350,7 +366,7 @@ fun QueueSheet(
                 remainingMs = snapshot.totalRemainingMs,
                 shuffleEnabled = shuffleEnabled,
                 onToggleShuffle = { QueueManager.toggleShuffle(controller) },
-                onDismiss = onDismiss,
+                onDismiss = dismissSmoothly,
             )
 
             Spacer(Modifier.height(12.dp))
@@ -1443,6 +1459,10 @@ fun TrackOptionsMenu(
     onInspect: () -> Unit,
     onMessage: (String) -> Unit,
 ) {
+    // La acción de playlists la provee PlayerApp (ver `LocalAddToPlaylist`): así el mismo
+    // menú la ofrece en la biblioteca, en la cola y en el detalle de un álbum sin que cada
+    // pantalla tenga que pasarla por parámetro.
+    val addToPlaylist = LocalAddToPlaylist.current
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
@@ -1470,6 +1490,18 @@ fun TrackOptionsMenu(
                 onDismiss()
             },
         )
+        if (addToPlaylist != null) {
+            DropdownMenuItem(
+                text = { Text("Add to playlist", color = Cream) },
+                leadingIcon = {
+                    Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = null, tint = Gold)
+                },
+                onClick = {
+                    onDismiss()
+                    addToPlaylist(listOf(track))
+                },
+            )
+        }
         DropdownMenuItem(
             text = { Text("Technical info / Metadata", color = Cream) },
             leadingIcon = {

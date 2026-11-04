@@ -85,7 +85,10 @@ data class EqSettings(
      * biquads que suenan y cacheado: la UI lo pide en cada muestra de la curva.
      */
     val curvePeakDb: Float by lazy {
-        if (bands.none { it.isGainBand && abs(it.gainDb) >= 0.05f }) 0f
+        val hasActiveGain = bands.any { it.isGainBand && abs(it.gainDb) >= 0.05f }
+        // Un filtro de corte con Q alto también puede resonar por encima de 0 dB; hay
+        // que medirlo aunque no haya ninguna banda de ganancia activa.
+        if (!hasCutFilters && !hasActiveGain) 0f
         else BiquadDesign.bandsPeakDb(bands, REFERENCE_SAMPLE_RATE).toFloat()
     }
 

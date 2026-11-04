@@ -38,6 +38,12 @@ android {
                 enable = true
                 packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
             }
+            // Sin reglas de keep, R8 rompía el JNI del motor nativo (UnsatisfiedLinkError
+            // al abrir). Ver `app/proguard-rules.pro`.
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
     compileOptions {

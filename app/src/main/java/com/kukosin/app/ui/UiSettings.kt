@@ -30,6 +30,11 @@ data class UiSettings(
     /** Intensidad del blur de las transiciones (Off / Soft / Strong). */
     val blurStrength: BlurStrength = BlurStrength.SOFT,
     /**
+     * Visualizador de espectro sobre la carátula. Apagado, el procesador de análisis ni
+     * decodifica: la cadena de audio queda como si no existiera.
+     */
+    val showSpectrum: Boolean = true,
+    /**
      * Radio del blur ya escalado, listo para `Modifier.blur`. Se calcula una sola vez por
      * cambio de ajuste y no en cada recomposición.
      */
@@ -55,6 +60,7 @@ object UiSettingsManager {
     private const val KEY_ANIMATION_SPEED = "animation_speed"
     private const val KEY_FONT_WEIGHT = "font_weight"
     private const val KEY_BLUR_STRENGTH = "blur_strength"
+    private const val KEY_SHOW_SPECTRUM = "show_spectrum"
 
     private var prefs: SharedPreferences? = null
 
@@ -96,6 +102,7 @@ object UiSettingsManager {
             fontOption = font,
             blurStrength = blur,
             blur = blur.radii(),
+            showSpectrum = prefs.getBoolean(KEY_SHOW_SPECTRUM, true),
         )
         motionScale.scaleFactor = speed.scale
     }
@@ -115,6 +122,11 @@ object UiSettingsManager {
     @Composable
     @ReadOnlyComposable
     fun current(): UiSettings = LocalUiSettings.current
+
+    fun setShowSpectrum(show: Boolean) {
+        prefs?.edit()?.putBoolean(KEY_SHOW_SPECTRUM, show)?.apply()
+        state.value = state.value.copy(showSpectrum = show)
+    }
 
     fun setFontOption(option: FontWeightOption) {
         prefs?.edit()?.putString(KEY_FONT_WEIGHT, option.name)?.apply()

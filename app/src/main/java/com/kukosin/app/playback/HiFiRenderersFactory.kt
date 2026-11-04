@@ -52,9 +52,11 @@ class HiFiRenderersFactory(context: Context) : NextRenderersFactory(context) {
         enableAudioTrackPlaybackParams: Boolean,
     ): AudioSink {
         val mode = AudioSettingsManager.configState.value.outputMode
-        // Una cadena de procesadores por sink, sin ganancia ni fundidos añadidos: el
-        // único DSP es el ecualizador, que en bypass copia los bytes tal cual.
-        val processors: Array<AudioProcessor> = arrayOf(EqAudioProcessor())
+        // Dos etapas: primero la ganancia (fundidos entre pistas + ReplayGain, inerte si
+        // ambos están apagados) y después el ecualizador. Las dos copian los bytes tal
+        // cual cuando no hay nada que hacer, así que la ruta sigue siendo bit-perfect.
+        val processors: Array<AudioProcessor> =
+            arrayOf(GainAudioProcessor(), EqAudioProcessor(), SpectrumAudioProcessor())
         val builder = DefaultAudioSink.Builder(context)
             .setEnableFloatOutput(false)
             .setAudioProcessors(processors)

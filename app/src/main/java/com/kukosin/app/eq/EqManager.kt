@@ -116,11 +116,26 @@ object EqManager {
         update { it.applyingPreset(preset) }
     }
 
+    /**
+     * Vuelve todo al estado de fábrica: ganancias en 0, preamp en 0 y también los
+     * tipos/frecuencias/Q originales. Antes sólo se ponían las ganancias en 0, pero un
+     * notch o un pasa-altos seguía filtrando y el EQ no era plano de verdad (ni podía
+     * volver al bypass bit-exacto).
+     */
     fun resetFlat() = update {
         it.copy(
-            bands = it.bands.map { band -> band.copy(gainDb = 0f) },
+            bands = DefaultEqBands,
             preampDb = 0f,
             presetName = EqPresets.default.name,
+        )
+    }
+
+    /** Restaura una sola banda a su frecuencia, tipo y Q de fábrica. */
+    fun resetBand(index: Int) = update { settings ->
+        val factory = DefaultEqBands.getOrNull(index) ?: return@update settings
+        settings.copy(
+            bands = settings.bands.mapIndexed { i, band -> if (i == index) factory else band },
+            presetName = EqSettings.CUSTOM_PRESET,
         )
     }
 

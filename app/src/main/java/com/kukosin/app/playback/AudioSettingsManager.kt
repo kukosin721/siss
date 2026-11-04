@@ -7,17 +7,21 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Ajustes de audio. Ya no hay "driver", ni rate objetivo, ni formato PCM: el motor
- * siempre abre el DAC con el formato exacto del archivo. Lo único configurable es la
- * política (estricto o con fallback) y el tamaño de buffer.
+ * Ajustes de audio: modo de salida, política del motor (estricto o con fallback),
+ * buffer, fundidos y algunos extras de la cola.
+ *
+ * Oboe está **desactivado por defecto** por ahora (ver [AudioConfig.outputMode]): el
+ * camino estable es el mezclador de Android. Los modos de Oboe siguen disponibles en
+ * Ajustes para cuando se repare su problema de audio.
  */
 data class AudioConfig(
     /**
-     * Camino de salida. Por defecto [OutputMode.AUTO]: todo se reproduce por el motor
-     * de Oboe en la mejor salida disponible. El mezclador queda como salida de
-     * emergencia manual.
+     * Camino de salida. Por defecto [OutputMode.DISABLED]: AudioTrack / mezclador de
+     * Android, **sin Oboe**. Oboe queda disponible en Ajustes para probarlo, pero no se
+     * usa solo: en varios dispositivos está dando problemas de audio y se va a reparar
+     * aparte. Cuando eso pase, el default vuelve a [OutputMode.AUTO].
      */
-    val outputMode: OutputMode = OutputMode.AUTO,
+    val outputMode: OutputMode = OutputMode.DISABLED,
     /**
      * Si está activo, el motor NUNCA convierte: o abre exacto, o falla y avisa.
      * Apagado (recomendado), intenta bit-perfect primero y sólo si el DAC no lo
@@ -52,7 +56,27 @@ data class AudioConfig(
     val volumeCurve: Int = 1,
     /** Vaciado del motor al cambiar de pista sin esperar las transiciones del HAL. */
     val fastTransitions: Boolean = true,
+    /**
+     * Fundido de salida/entrada al cambiar de pista, en ms. `0` lo apaga y deja el corte
+     * seco (lo que quiere un disco en vivo o un DJ mix). Se aplica en la cadena de audio,
+     * así que no reconstruye el reproductor al cambiarlo.
+     */
+    val crossfadeMs: Int = DEFAULT_CROSSFADE_MS,
+    /**
+     * ReplayGain: `0` apagado, `1` por pista, `2` por álbum. Con etiquetas ausentes no
+     * hace nada; con etiquetas presentes nivela el volumen entre discos.
+     */
+    val replayGainMode: Int = 0,
+    /** Pre-ganancia en dB sumada a la etiqueta (para discos que quedan bajos igual). */
+    val replayGainPreampDb: Int = 0,
 ) {
+    val replayGainLabel: String
+        get() = when (replayGainMode) {
+            1 -> "Track"
+            2 -> "Album"
+            else -> "Off"
+        }
+
     /**
      * Sólo lo que obliga a reconstruir el ExoPlayer. Cambiar el aspecto de la cola
      * no debe cortar la reproducción.
@@ -62,11 +86,30 @@ data class AudioConfig(
 
     companion object {
         val BUFFER_OPTIONS = listOf(100, 250, 500, 1000)
+
+        /** 2 s: se nota al saltar de pista pero no alarga la escucha de un disco entero. */
+        const val DEFAULT_CROSSFADE_MS = 2000
+
+        /** Opciones del selector de fundido (ms). `0` = corte seco / gapless puro. */
+        val CROSSFADE_OPTIONS = listOf(0, 500, 1000, 2000, 3000, 5000, 8000)
+
+        /** Opciones de pre-ganancia (dB). */
+        val PREAMP_OPTIONS = listOf(-6, -3, 0, 3, 6)
     }
 }
 
 object AudioSettingsManager {
     private const val PREFS_NAME = "kukosin_audio_settings_v2"
+
+    /**
+     * Marca de la migración que apaga Oboe una sola vez.
+     *
+     * No alcanza con cambiar el valor por defecto de la clave: una instalación que ya
+     * tenía guardado `AUTO` (u otro modo de Oboe) lo seguiría usando. Al primer arranque
+     * con esta versión se fuerza el mezclador de Android; si después el usuario elige
+     * Oboe a mano en Ajustes, esa elección se respeta en los arranques siguientes.
+     */
+    private const val KEY_OBOE_OFF_MIGRATION = "oboe_off_by_default_v1"
 
     private var prefs: SharedPreferences? = null
     private val state = MutableStateFlow(AudioConfig())
@@ -81,11 +124,17 @@ object AudioSettingsManager {
 
     private fun load() {
         val p = prefs ?: return
+        if (!p.getBoolean(KEY_OBOE_OFF_MIGRATION, false)) {
+            // Oboe apagado de entrada (temporalmente): el audio sale por el mezclador
+            // de Android, que es el camino estable. Se hace una sola vez para no pisar
+            // al usuario que después lo vuelva a activar desde Ajustes.
+            p.edit()
+                .putString("output_mode_v4", OutputMode.DISABLED.name)
+                .putBoolean(KEY_OBOE_OFF_MIGRATION, true)
+                .apply()
+        }
         state.value = AudioConfig(
-            // Clave nueva: el motor de Oboe pasa a ser el camino por defecto. Las
-            // instalaciones viejas que habían quedado en "Disabled" (clave v3) también
-            // migran acá, que es lo que se busca: priorizar Oboe al reproducir.
-            outputMode = OutputMode.fromName(p.getString("output_mode_v4", OutputMode.AUTO.name)),
+            outputMode = OutputMode.fromName(p.getString("output_mode_v4", OutputMode.DISABLED.name)),
             strictBitPerfect = p.getBoolean("strict_bit_perfect", false),
             bufferMs = p.getInt(
                 "buffer_ms",
@@ -104,6 +153,9 @@ object AudioSettingsManager {
             prerollMs = p.getInt("preroll_ms", -1),
             volumeCurve = p.getInt("volume_curve", 1),
             fastTransitions = p.getBoolean("fast_transitions", true),
+            crossfadeMs = p.getInt("crossfade_ms", AudioConfig.DEFAULT_CROSSFADE_MS).coerceIn(0, 15000),
+            replayGainMode = p.getInt("replay_gain_mode", 0).coerceIn(0, 2),
+            replayGainPreampDb = p.getInt("replay_gain_preamp_db", 0).coerceIn(-12, 12),
         )
     }
 
@@ -184,5 +236,26 @@ object AudioSettingsManager {
     fun setQueueShowHistory(show: Boolean) {
         prefs?.edit()?.putBoolean("queue_show_history", show)?.apply()
         state.value = state.value.copy(queueShowHistory = show)
+    }
+
+    fun setCrossfadeMs(ms: Int) {
+        val value = ms.coerceIn(0, 15000)
+        prefs?.edit()?.putInt("crossfade_ms", value)?.apply()
+        state.value = state.value.copy(crossfadeMs = value)
+        // Cambiar el ajuste mientras suena no debe dejar el volumen a mitad de rampa.
+        PlaybackGain.snapTo(1f)
+    }
+
+    fun setReplayGainMode(mode: Int) {
+        val value = mode.coerceIn(0, 2)
+        prefs?.edit()?.putInt("replay_gain_mode", value)?.apply()
+        state.value = state.value.copy(replayGainMode = value)
+        if (value == 0) PlaybackGain.setReplayGainDb(0f)
+    }
+
+    fun setReplayGainPreamp(db: Int) {
+        val value = db.coerceIn(-12, 12)
+        prefs?.edit()?.putInt("replay_gain_preamp_db", value)?.apply()
+        state.value = state.value.copy(replayGainPreampDb = value)
     }
 }

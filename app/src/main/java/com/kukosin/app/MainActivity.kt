@@ -10,9 +10,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.InternalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.material3.Surface
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.WindowRecomposerPolicy
 import androidx.compose.ui.platform.createLifecycleAwareWindowRecomposer
 import com.kukosin.app.ui.PlayerApp
@@ -20,6 +26,7 @@ import com.kukosin.app.ui.HapticsBridge
 import com.kukosin.app.ui.UiSettingsManager
 import com.kukosin.app.ui.theme.AppTheme
 import com.kukosin.app.ui.theme.Ink
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     @OptIn(InternalComposeUiApi::class)
@@ -41,7 +48,28 @@ class MainActivity : ComponentActivity() {
         setContent {
             AppTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = Ink) {
-                    PlayerApp()
+                    val context = LocalContext.current
+                    // Si la corrida anterior murió, se muestra el error en vez del
+                    // reproductor: es la única forma de leer el fallo sin una PC.
+                    var crash by remember { mutableStateOf(CrashReport.takeReport(context)) }
+                    LaunchedEffect(Unit) {
+                        // Ya dibujado (y un respiro para cazar un fallo nativo temprano).
+                        delay(1_200)
+                        CrashReport.markReady(context)
+                    }
+                    val report = crash
+                    if (report != null) {
+                        CrashReport.CrashReportScreen(
+                            report = report,
+                            onContinue = {
+                                CrashReport.clear(context)
+                                crash = null
+                                recreate()
+                            },
+                        )
+                    } else {
+                        PlayerApp()
+                    }
                 }
             }
         }

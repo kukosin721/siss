@@ -6,6 +6,7 @@ import androidx.media3.common.util.UnstableApi
 import android.Manifest
 import android.content.ComponentName
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Log
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,7 +27,9 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -40,6 +43,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.animate
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.material.icons.Icons
@@ -107,6 +111,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -161,6 +166,8 @@ import com.kukosin.app.data.AlbumGroup
 import com.kukosin.app.data.ArtistGroup
 import com.kukosin.app.data.FolderNode
 import com.kukosin.app.data.LibraryInsights
+import com.kukosin.app.data.M3uPlaylist
+import com.kukosin.app.data.Playlist
 import com.kukosin.app.data.Track
 import com.kukosin.app.data.formatTime
 import com.kukosin.app.data.ytm.YtmTrack
@@ -171,6 +178,7 @@ import com.kukosin.app.playback.OutputMode
 import com.kukosin.app.playback.OutputDevice
 import com.kukosin.app.playback.PlaybackService
 import com.kukosin.app.playback.QueueManager
+import com.kukosin.app.playback.SleepTimer
 import com.kukosin.app.playback.UsbDacManager
 import com.kukosin.app.ui.theme.Cream
 import com.kukosin.app.ui.theme.CreamMuted
@@ -215,6 +223,17 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     var showSignalPath by remember { mutableStateOf(false) }
     var showQueueSheet by remember { mutableStateOf(false) }
     var userMessage by remember { mutableStateOf<String?>(null) }
+    // Temporizador de sueño: el estado vive en SleepTimer (sobrevive a la recomposición y
+    // al cambio de pista); acá sólo se refleja y se abre el diálogo.
+    var showSleepTimer by remember { mutableStateOf(false) }
+    val sleepRemainingMs by SleepTimer.remainingMs.collectAsStateWithLifecycle()
+
+    // ── Playlists ──
+    val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    var playlistDetailId by remember { mutableStateOf<String?>(null) }
+    var playlistPickerId by remember { mutableStateOf<String?>(null) }
+    var addToPlaylistTracks by remember { mutableStateOf<List<Track>>(emptyList()) }
+    var playlistPrompt by remember { mutableStateOf<PlaylistPrompt?>(null) }
     // Pista a la que hay que llevar la biblioteca después de tocar la carátula.
     var libraryFocusUri by remember { mutableStateOf<android.net.Uri?>(null) }
     // Dock (mini reproductor) retráctil: se esconde al bajar en la lista y vuelve al subir.
@@ -273,6 +292,86 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
         if (libraryFocusUri != null) {
             delay(1900)
             libraryFocusUri = null
+        }
+    }
+
+    // Importar una lista .m3u/.m3u8: se resuelve contra la biblioteca actual y se crea
+    // una playlist nueva con lo que exista en este teléfono.
+    val m3uImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            val text = runCatching {
+                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+            }.getOrNull()
+            if (text.isNullOrBlank()) {
+                userMessage = "Could not read that file"
+            } else {
+                val uris = M3uPlaylist.parse(text, library.tracks)
+                if (uris.isEmpty()) {
+                    userMessage = "None of those songs are in this library"
+                } else {
+                    val fileName = openDocumentName(context, uri) ?: "Imported playlist"
+                    val created = viewModel.createPlaylist(M3uPlaylist.playlistNameFrom(fileName))
+                    if (created == null) {
+                        userMessage = "Could not create the playlist"
+                    } else {
+                        val added = viewModel.addUrisToPlaylist(created.id, uris)
+                        userMessage = "Imported $added songs into \"${created.name}\""
+                    }
+                }
+            }
+        }
+    }
+
+    // Exportar un respaldo: JSON con playlists, favoritos, contadores, EQ y ajustes.
+    val backupExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(com.kukosin.app.data.Backup.MIME),
+    ) { uri ->
+        if (uri != null) {
+            val json = runCatching { com.kukosin.app.data.Backup.export(context) }.getOrNull()
+            val written = if (json == null) {
+                false
+            } else {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { stream ->
+                        stream.write(json.toByteArray())
+                    } != null
+                }.getOrDefault(false)
+            }
+            userMessage = if (written) "Backup saved" else "Could not write the backup"
+        }
+    }
+
+    // Restaurar: se lee el archivo y se aplica sin borrar nada de lo que ya hay.
+    val backupImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            val text = runCatching {
+                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+            }.getOrNull()
+            if (text.isNullOrBlank()) {
+                userMessage = "Could not read that file"
+            } else {
+                val result = runCatching {
+                    com.kukosin.app.data.Backup.restore(context, text)
+                }.getOrNull()
+                userMessage = when {
+                    result == null -> "That file is not a Kukosin backup"
+                    else -> buildString {
+                        append("Restored ")
+                        append(result.playlists)
+                        append(if (result.playlists == 1) " playlist" else " playlists")
+                        append(", ")
+                        append(result.favorites)
+                        append(if (result.favorites == 1) " favorite" else " favorites")
+                        if (result.eq) append(", EQ")
+                        if (result.settings > 0) append(", ${result.settings} settings")
+                        if (result.skipped > 0) append(" · ${result.skipped} already existed")
+                    }
+                }
+            }
         }
     }
 
@@ -351,14 +450,15 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     val audioConfig by viewModel.audioConfig.collectAsStateWithLifecycle()
     val uiSettings by UiSettingsManager.settings.collectAsStateWithLifecycle()
     val routeReady by AudioRoute.isReady.collectAsStateWithLifecycle()
-    // Sin DAC conectado los modos exclusivos quedan bloqueados; si había uno guardado
-    // se vuelve al modo automático de Oboe (no al mezclador): la reproducción sigue
-    // pasando por el motor, sólo pierde la exclusividad.
+    // Sin DAC conectado los modos exclusivos quedan bloqueados. Como Oboe está apagado
+    // por defecto mientras se arreglan sus problemas de audio, el respaldo tampoco es
+    // AUTO: se vuelve al mezclador de Android (DISABLED). Si el usuario había elegido
+    // Oboe a mano, ese modo no "requiere DAC" y se respeta.
     // Se espera a que AudioRoute haya leído los dispositivos reales; si no, el
     // valor inicial (sin DAC) borraría el modo de un DAC recién conectado.
     LaunchedEffect(output.isDac, routeReady) {
         if (routeReady && !output.isDac && audioConfig.outputMode.requiresDac) {
-            viewModel.setOutputMode(OutputMode.AUTO)
+            viewModel.setOutputMode(OutputMode.DISABLED)
         }
     }
     // El estado del motor refleja el modo elegido incluso cuando no hay stream
@@ -381,6 +481,13 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     var sheetAnimJob by remember { mutableStateOf<Job?>(null) }
     var lyricsAnimJob by remember { mutableStateOf<Job?>(null) }
     val favoriteUris by LibraryInsights.favorites.collectAsStateWithLifecycle()
+
+    // Origen del morph cuando se toca una fila: la carátula de esa fila vuela y se
+    // agranda hasta el slot grande del reproductor. Si está vacío, se usa el dock.
+    val pressOrigin = remember { TrackPressOrigin() }
+    // Se congela al empezar a abrir para que todo el vuelo use el mismo punto de
+    // partida aunque la lista se recicle o la fila desaparezca.
+    var morphOriginRect by remember { mutableStateOf<Rect?>(null) }
 
     var rootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var rootSizePx by remember { mutableStateOf(IntSize.Zero) }
@@ -405,17 +512,41 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
             wasSheetDragged = false
             return
         }
+        // Al cerrar, la carátula vuelve al mini reproductor. Al abrir desde una fila,
+        // el rectángulo de esa fila queda vivo durante todo el vuelo y recién se
+        // descarta al llegar: así el cierre siguiente encuentra el dock en reposo.
+        if (target <= 0f) {
+            pressOrigin.clear()
+            morphOriginRect = null
+        } else if (from < 0.5f) {
+            // Abrir desde una fila: el rectángulo se toma una sola vez, al arrancar.
+            morphOriginRect = pressOrigin.consumeRecent()
+        }
+        // Dos "motores" según cómo empezó el movimiento:
+        //  - Toque/botón: tween con duración fija y curva suave. Es lo que hace que
+        //    abrir una canción o volver al reproductor no se sienta instantáneo.
+        //  - Fling del dedo: resorte (conserva la velocidad del gesto) pero más blando
+        //    que antes, para que no frene de golpe al soltar.
+        val spec: AnimationSpec<Float> = if (fromDrag) {
+            Motion.snappy(stiffness = 240f, dampingRatio = 0.94f)
+        } else {
+            Motion.sheetTravel(open = target > 0.5f)
+        }
         sheetAnimJob = playerSheetScope.launch {
             animate(
                 initialValue = from,
                 targetValue = target,
                 initialVelocity = initialVelocity.coerceIn(-8f, 8f),
-                animationSpec = Motion.snappy(stiffness = 380f, dampingRatio = 0.90f),
+                animationSpec = spec,
             ) { value, _ ->
                 sheetProgress = value.coerceIn(0f, 1f)
             }
             sheetProgress = target
             wasSheetDragged = false
+            if (target >= 1f) {
+                pressOrigin.clear()
+                morphOriginRect = null
+            }
         }
     }
 
@@ -426,7 +557,9 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                 initialValue = playerLyricsProgress,
                 targetValue = target,
                 initialVelocity = initialVelocity.coerceIn(-8f, 8f),
-                animationSpec = Motion.snappy(stiffness = 320f, dampingRatio = 0.88f),
+                // Más blando que antes: la carátula entra/sale del rincón de letras con
+                // la misma calma que el resto de los movimientos grandes.
+                animationSpec = Motion.snappy(stiffness = 240f, dampingRatio = 0.95f),
             ) { value, _ -> playerLyricsProgress = value.coerceIn(0f, 1f) }
             playerLyricsProgress = target
         }
@@ -447,17 +580,35 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     val lyricsDragRangePx = with(density) { 200.dp.toPx() }
 
     // Reservar espacio a la onda ampliada sin sacar los controles de la pantalla.
-    val waveformHeight = if (rootSizePx.height > 0 && with(density) { rootSizePx.height.toDp() } < 720.dp) {
-        116.dp
-    } else {
-        136.dp
+    // La onda crece con la pantalla: en un teléfono alto se ve más "Poweramp".
+    val rootHeightDp = if (rootSizePx.height > 0) with(density) { rootSizePx.height.toDp() } else 780.dp
+    val waveformHeight = when {
+        rootHeightDp < 720.dp -> 112.dp
+        rootHeightDp < 850.dp -> 128.dp
+        else -> 144.dp
     }
+    // La carátula ocupa casi todo el ancho (como el reproductor de referencia) y el
+    // resto de la pantalla se reparte entre chips, acciones, onda y accesos. El tope
+    // de 380 dp evita que en una tablet quede desproporcionada.
+    //
+    // Altura: al alto total se le descuentan las barras del sistema (el `Column` del
+    // reproductor lleva `statusBarsPadding` + `navigationBarsPadding`) y el "chrome"
+    // fijo que no escala: cabecera, chips, accesos y el relleno de la tarjeta de onda
+    // (~250 dp, ver NowPlayingSheet). Sin ese descuento, en un teléfono de 720 dp con
+    // navegación de 3 botones la barra de accesos quedaba cortada abajo.
+    val insetsTopPx = if (rootSizePx.height > 0) {
+        WindowInsets.systemBars.getTop(density).toFloat()
+    } else 0f
+    val insetsBottomPx = if (rootSizePx.height > 0) {
+        WindowInsets.systemBars.getBottom(density).toFloat()
+    } else 0f
     val maxArtDp = if (rootSizePx.height > 0 && rootSizePx.width > 0) {
         with(density) {
             minOf(
-                320.dp.toPx(),
-                (rootSizePx.width - 48.dp.toPx()).coerceAtLeast(1.dp.toPx()),
-                (rootSizePx.height - (waveformHeight + 405.dp).toPx()).coerceAtLeast(120.dp.toPx()),
+                380.dp.toPx(),
+                (rootSizePx.width - 32.dp.toPx()).coerceAtLeast(1.dp.toPx()),
+                (rootSizePx.height - insetsTopPx - insetsBottomPx - (waveformHeight + 250.dp).toPx())
+                    .coerceAtLeast(196.dp.toPx()),
             ).toDp()
         }
     } else {
@@ -473,6 +624,11 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
             val bottom = (rootSizePx.height.takeIf { it > 0 } ?: 1800) - with(density) { 36.dp.toPx() }
             Rect(left, bottom - sizePx, left + sizePx, bottom)
         }
+    }
+
+    // Lo que lee el morph: el rectángulo de la fila tocada si existe; si no, el dock.
+    val resolveMorphOrigin: () -> Rect = {
+        morphOriginRect ?: resolveMiniArtRect()
     }
 
     val resolveFullArtSlotRect: () -> Rect = {
@@ -499,7 +655,9 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     // retrocede en subcategorías o vuelve con animación al reproductor principal.
     val modalOpen = showQueueSheet || showSignalPath || settingsDialogVisible ||
         library.selectedAlbum != null || library.selectedArtist != null ||
-        library.selectedTagGroup != null || library.inspectTrack != null
+        library.selectedTagGroup != null || library.inspectTrack != null ||
+        playlistDetailId != null || playlistPickerId != null ||
+        addToPlaylistTracks.isNotEmpty() || playlistPrompt != null || showSleepTimer
     BackHandler(enabled = !modalOpen && (!showNowPlaying || sheetProgress < 0.999f)) {
         if (sheetProgress > 0.01f) {
             animatePlayerSheet(target = 1f, fromDrag = false)
@@ -517,6 +675,16 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
     val sheetController = controller
     val sheetTrack = playback.current ?: library.tracks.firstOrNull()
 
+    // Blur del fondo mientras la cola está abierta. La cola es una ventana aparte
+    // (ModalBottomSheet), así que desenfocar la raíz no la toca: sólo se difumina el
+    // reproductor de atrás. El radio sale del ajuste de blur de la app (Off = 0).
+    val queueVisible = showQueueSheet && sheetController != null
+    val queueBackdropBlur by animateDpAsState(
+        targetValue = if (queueVisible) uiSettings.blur.overlay else 0.dp,
+        animationSpec = Motion.enter(260),
+        label = "queueBackdropBlur",
+    )
+
     LaunchedEffect(sheetTrack?.uri, library.inspectTrack?.uri, audioConfig.autoAnalyze) {
         val currentTrack = sheetTrack
         if (library.inspectTrack == null && currentTrack != null && currentTrack.isLocal) {
@@ -527,6 +695,17 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
         }
     }
 
+    // Los menús de pista (biblioteca, cola, álbum) ofrecen "Add to playlist" a través de
+    // este local: la acción es del reproductor y no vale la pena pasarla por parámetro por
+    // cada pantalla.
+    val addToPlaylistAction: (List<Track>) -> Unit = remember(viewModel) {
+        { tracks -> if (tracks.isNotEmpty()) addToPlaylistTracks = tracks }
+    }
+
+    CompositionLocalProvider(
+        LocalTrackPressOrigin provides pressOrigin,
+        LocalAddToPlaylist provides addToPlaylistAction,
+    ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -538,6 +717,13 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                 Brush.verticalGradient(
                     listOf(Ink, InkElevated, Ink),
                 ),
+            )
+            .then(
+                if (queueBackdropBlur > 0.2.dp) {
+                    Modifier.blur(queueBackdropBlur, edgeTreatment = BlurredEdgeTreatment.Rectangle)
+                } else {
+                    Modifier
+                },
             ),
     ) {
         val bottomPadding = 108
@@ -569,7 +755,10 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                         isPlaying = playback.isPlaying,
                         controller = controller,
                         bottomPadding = bottomPadding,
-                        onBackToPlayer = { animatePlayerSheet(target = 1f, fromDrag = false) },
+                        onBackToPlayer = {
+                            pressOrigin.clear()
+                            animatePlayerSheet(target = 1f, fromDrag = false)
+                        },
                         onSelectCategory = viewModel::selectCategory,
                         onQueryChange = viewModel::onQueryChange,
                         onRequestPermission = { permissionLauncher.launch(audioPermissions()) },
@@ -591,12 +780,60 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                         onInspectTrack = viewModel::setInspectTrack,
                         onMessage = { msg -> userMessage = msg },
                         onSortChange = viewModel::setSortMode,
+                        playlists = playlists,
+                        onOpenPlaylist = { playlist -> playlistDetailId = playlist.id },
+                        onPlayPlaylist = { playlist ->
+                            val byUri = library.tracks.associateBy { it.uri.toString() }
+                            val list = playlist.trackUris.mapNotNull { uri -> byUri[uri] }
+                            if (list.isEmpty()) {
+                                userMessage = "This playlist has no songs in the library"
+                            } else {
+                                playAndOpen(controller, list, 0) {
+                                    animatePlayerSheet(target = 1f, fromDrag = false)
+                                }
+                            }
+                        },
+                        onImportM3u = { m3uImportLauncher.launch(arrayOf("*/*")) },
+                        onCreatePlaylist = {
+                            playlistPrompt = PlaylistPrompt(
+                                playlistId = null,
+                                initial = "",
+                                title = "New playlist",
+                                confirm = "Create",
+                            )
+                        },
+                        onSaveQueueAsPlaylist = {
+                            val current = controller
+                            val byUri = library.tracks.associateBy { it.uri.toString() }
+                            val uris = if (current == null) {
+                                emptyList()
+                            } else {
+                                (0 until current.mediaItemCount)
+                                    .map { index -> current.getMediaItemAt(index).mediaId }
+                                    .filter { it in byUri }
+                                    .distinct()
+                            }
+                            if (uris.isEmpty()) {
+                                userMessage = "The queue has no songs from the library"
+                            } else {
+                                playlistPrompt = PlaylistPrompt(
+                                    playlistId = null,
+                                    initial = "Queue",
+                                    title = "Save queue as playlist",
+                                    confirm = "Save",
+                                    pendingTracks = uris.mapNotNull { uri -> byUri[uri] },
+                                )
+                            }
+                        },
                         focusUri = libraryFocusUri,
                     )
 
                     AppSection.EQUALIZER -> EqualizerWorkspace(
                         bottomPadding = bottomPadding,
-                        onBackToPlayer = { animatePlayerSheet(target = 1f, fromDrag = false) },
+                        onBackToPlayer = {
+                            pressOrigin.clear()
+                            animatePlayerSheet(target = 1f, fromDrag = false)
+                        },
                     )
 
                     AppSection.SEARCH -> PowerampSearchWorkspace(
@@ -608,13 +845,22 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                         playbackError = playback.error,
                         controller = controller,
                         bottomPadding = bottomPadding,
-                        onBackToPlayer = { animatePlayerSheet(target = 1f, fromDrag = false) },
+                        onBackToPlayer = {
+                            pressOrigin.clear()
+                            animatePlayerSheet(target = 1f, fromDrag = false)
+                        },
                         onQueryChange = viewModel::onQueryChange,
                         onYtmQueryChange = viewModel::onYtmQueryChange,
                         onSearchYtm = { viewModel.searchYtm() },
                         onToggleLyrics = viewModel::toggleLyricsOnly,
                         onRequestPermission = { permissionLauncher.launch(audioPermissions()) },
-                        onLocalTrackClick = { tracks, index -> playTrackList(controller, tracks, index) },
+                        // Igual que en Biblioteca y en los detalles: elegir una canción
+                        // lleva al reproductor (y la carátula crece desde la fila).
+                        onLocalTrackClick = { tracks, index ->
+                            playAndOpen(controller, tracks, index) {
+                                animatePlayerSheet(target = 1f, fromDrag = false)
+                            }
+                        },
                         onAlbumClick = viewModel::selectAlbum,
                         onArtistClick = viewModel::selectArtist,
                         onInspectTrack = viewModel::setInspectTrack,
@@ -661,7 +907,10 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                 }
             },
             onNext = { controller?.seekToNext() },
-            onOpen = { animatePlayerSheet(target = 1f, fromDrag = false) },
+            onOpen = {
+                pressOrigin.clear()
+                animatePlayerSheet(target = 1f, fromDrag = false)
+            },
             onOpenSignalPath = { showSignalPath = true },
             onArtMeasured = { artCoords ->
                 val root = rootCoords
@@ -749,7 +998,7 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                 maxArtDp = maxArtDp,
                 waveformHeight = waveformHeight,
                 playPauseScale = playPauseScale,
-                miniArtRectProvider = resolveMiniArtRect,
+                artOriginRectProvider = resolveMorphOrigin,
                 fullArtSlotRectProvider = resolveFullArtSlotRect,
                 onFullArtSlotMeasured = { artCoords ->
                     val root = rootCoords
@@ -837,9 +1086,15 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                     activeSection = AppSection.SEARCH
                     animatePlayerSheet(target = 0f, fromDrag = false)
                 },
+                onOpenSleepTimer = { showSleepTimer = true },
+                sleepTimerActive = sleepRemainingMs > 0L,
                 onOpenSettingsShortcut = {
                     hapticTick()
                     showSettings = true
+                },
+                onOpenQueue = {
+                    hapticTick()
+                    showQueueSheet = true
                 },
             )
         }
@@ -853,7 +1108,7 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
                 isSheetDragging = isSheetDragging,
                 wasSheetDragged = wasSheetDragged,
                 baseArtDp = maxArtDp,
-                miniArtRectProvider = resolveMiniArtRect,
+                artOriginRectProvider = resolveMorphOrigin,
                 fullArtSlotRectProvider = resolveFullArtSlotRect,
             )
         }
@@ -913,6 +1168,156 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
         )
     }
 
+    if (showSleepTimer) {
+        SleepTimerDialog(
+            remainingMs = sleepRemainingMs,
+            onSelectMinutes = { minutes ->
+                val current = controller
+                if (current == null) {
+                    userMessage = "The player is not ready"
+                } else {
+                    SleepTimer.start(current, minutes)
+                    userMessage = "Sleep timer: $minutes min"
+                }
+                showSleepTimer = false
+            },
+            onCancel = {
+                SleepTimer.cancel()
+                userMessage = "Sleep timer off"
+            },
+            onDismiss = { showSleepTimer = false },
+        )
+    }
+
+    // ── Playlists ──────────────────────────────────────────────────────────
+    // "Agregar a la playlist" desde el menú de una pista de cualquier pantalla.
+    if (addToPlaylistTracks.isNotEmpty()) {
+        val tracks = addToPlaylistTracks
+        AddToPlaylistSheet(
+            tracks = tracks,
+            playlists = playlists,
+            containedCount = { playlist ->
+                val uris = tracks.map { it.uri.toString() }
+                playlist.trackUris.count { it in uris }
+            },
+            onChoose = { playlist ->
+                val added = viewModel.addToPlaylist(playlist.id, tracks)
+                userMessage = if (added == 0) {
+                    "Already in \"${playlist.name}\""
+                } else {
+                    "$added ${if (added == 1) "song" else "songs"} added to \"${playlist.name}\""
+                }
+                addToPlaylistTracks = emptyList()
+            },
+            onCreateAndAdd = { name ->
+                val created = viewModel.createPlaylist(name, tracks)
+                userMessage = if (created != null) {
+                    "Playlist \"${created.name}\" created with ${tracks.size} ${if (tracks.size == 1) "song" else "songs"}"
+                } else {
+                    "Could not create the playlist"
+                }
+                addToPlaylistTracks = emptyList()
+            },
+            onDismiss = { addToPlaylistTracks = emptyList() },
+        )
+    }
+
+    // Pickers y detalle se resuelven por id: si la lista se borra, la hoja se cierra sola.
+    LaunchedEffect(playlists, playlistDetailId) {
+        if (playlistDetailId != null && playlists.none { it.id == playlistDetailId }) {
+            playlistDetailId = null
+        }
+    }
+    LaunchedEffect(playlists, playlistPickerId) {
+        if (playlistPickerId != null && playlists.none { it.id == playlistPickerId }) {
+            playlistPickerId = null
+        }
+    }
+
+    playlistDetailId?.let { id ->
+        val playlist = playlists.firstOrNull { it.id == id }
+        if (playlist != null) {
+            val resolved = remember(playlist.trackUris, library.tracks) {
+                val byUri = library.tracks.associateBy { it.uri.toString() }
+                playlist.trackUris.map { uri -> byUri[uri] }
+            }
+            PlaylistDetailSheet(
+                playlist = playlist,
+                resolved = resolved,
+                currentUri = playback.current?.uri,
+                isPlaying = playback.isPlaying,
+                onPlay = { tracks, index ->
+                    playlistDetailId = null
+                    playAndOpen(controller, tracks, index) {
+                        animatePlayerSheet(target = 1f, fromDrag = false)
+                    }
+                },
+                onShuffle = { tracks ->
+                    playlistDetailId = null
+                    playAndOpen(controller, tracks.shuffled(), 0) {
+                        animatePlayerSheet(target = 1f, fromDrag = false)
+                    }
+                },
+                onAddSongs = { playlistPickerId = playlist.id },
+                onRename = {
+                    playlistPrompt = PlaylistPrompt(
+                        playlistId = playlist.id,
+                        initial = playlist.name,
+                        title = "Rename playlist",
+                        confirm = "Save",
+                    )
+                },
+                onDelete = {
+                    viewModel.deletePlaylist(playlist.id)
+                    playlistDetailId = null
+                    userMessage = "Playlist deleted"
+                },
+                onCoverPicked = { uri -> viewModel.setPlaylistCover(playlist.id, uri) },
+                onRemoveCover = { viewModel.clearPlaylistCover(playlist.id) },
+                onRemoveAt = { index -> viewModel.removeFromPlaylist(playlist.id, index) },
+                onMessage = { msg -> userMessage = msg },
+                onMove = { from, to -> viewModel.moveInPlaylist(playlist.id, from, to) },
+                onDismiss = { playlistDetailId = null },
+            )
+        }
+    }
+
+    playlistPickerId?.let { id ->
+        val playlist = playlists.firstOrNull { it.id == id }
+        if (playlist != null) {
+            PlaylistTrackPickerSheet(
+                playlistName = playlist.name,
+                allTracks = library.tracks,
+                existingUris = playlist.trackUris.toSet(),
+                onPick = { track -> viewModel.addToPlaylist(playlist.id, listOf(track)) },
+                onDismiss = { playlistPickerId = null },
+            )
+        }
+    }
+
+    playlistPrompt?.let { prompt ->
+        PlaylistNameDialog(
+            title = prompt.title,
+            initial = prompt.initial,
+            confirmLabel = prompt.confirm,
+            onConfirm = { name ->
+                val playlistId = prompt.playlistId
+                if (playlistId == null) {
+                    val created = viewModel.createPlaylist(name, prompt.pendingTracks)
+                    userMessage = if (created != null) {
+                        "Playlist \"${created.name}\" created"
+                    } else {
+                        "Could not create the playlist"
+                    }
+                } else {
+                    viewModel.renamePlaylist(playlistId, name)
+                }
+                playlistPrompt = null
+            },
+            onDismiss = { playlistPrompt = null },
+        )
+    }
+
     if (settingsDialogVisible) {
         FullScreenSettingsScreen(
             visibilityState = settingsVisibility,
@@ -940,6 +1345,16 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
             onSelectContinuity = viewModel::setContinuity,
             volumeCurve = audioConfig.volumeCurve,
             onSelectVolumeCurve = viewModel::setVolumeCurve,
+            crossfadeMs = audioConfig.crossfadeMs,
+            onSelectCrossfadeMs = viewModel::setCrossfadeMs,
+            replayGainMode = audioConfig.replayGainMode,
+            onSelectReplayGainMode = viewModel::setReplayGainMode,
+            replayGainPreampDb = audioConfig.replayGainPreampDb,
+            onSelectReplayGainPreamp = viewModel::setReplayGainPreamp,
+            onExportBackup = { backupExportLauncher.launch(com.kukosin.app.data.Backup.suggestedName()) },
+            onImportBackup = { backupImportLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+            showSpectrum = uiSettings.showSpectrum,
+            onToggleSpectrum = { UiSettingsManager.setShowSpectrum(!uiSettings.showSpectrum) },
             decoder = audioConfig.decoder,
             onSelectDecoder = { decoder -> viewModel.setDecoder(decoder) },
             usbPermissionGranted = UsbDacManager.current.value.hasPermission,
@@ -1034,6 +1449,7 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
             onOpenSignalPath = { showSignalPath = true },
             onAnalyzeClick = { viewModel.analyzeSpectral(track) },
         )
+    }
     }
 }
 
@@ -1183,14 +1599,22 @@ internal fun rememberPlaybackState(
 
 /** La misma carátula se desplaza y encoge del centro a la esquina superior izquierda. */
 
+/**
+ * Diálogo de nombre pendiente: sirve para crear una lista (con pistas ya elegidas, como
+ * "guardar la cola") y para renombrar una existente.
+ */
+private data class PlaylistPrompt(
+    val playlistId: String?,
+    val initial: String,
+    val title: String,
+    val confirm: String,
+    val pendingTracks: List<Track> = emptyList(),
+)
 
-
-
-
-
-
-
-
-
-
-
+/** Nombre visible de un documento elegido con SAF (para nombrar la lista importada). */
+private fun openDocumentName(context: android.content.Context, uri: android.net.Uri): String? =
+    runCatching {
+        context.contentResolver
+            .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+    }.getOrNull() ?: uri.lastPathSegment

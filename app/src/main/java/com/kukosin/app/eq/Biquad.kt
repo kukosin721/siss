@@ -214,7 +214,11 @@ object BiquadDesign {
         if (!settings.isProcessing) return 0.0
         var db = settings.effectivePreampDb.toDouble()
         for (band in settings.bands) {
-            if (abs(band.gainDb) < 0.05f) continue
+            // Los filtros de corte (pasa-altos, pasa-bajos, notch) no tienen "ganancia":
+            // su efecto depende de la frecuencia. Si se saltearan por gainDb == 0, la
+            // curva y el nodo de esa banda se dibujarían como si no existiera, aunque
+            // el DSP sí la aplica. Sólo se pueden saltear las bandas de ganancia.
+            if (band.isGainBand && abs(band.gainDb) < 0.05f) continue
             db += magnitudeDb(forBand(band, sampleRate), freqHz, sampleRate)
         }
         return db
@@ -226,8 +230,12 @@ object BiquadDesign {
      * Se barre el espectro en pasos del 2 % (~250 puntos), con los biquads reales.
      */
     fun bandsPeakDb(bands: List<EqBand>, sampleRate: Double): Double {
+        // Se incluyen SIEMPRE los filtros de corte: un pasa-altos/pasa-bajos con Q alto
+        // tiene un pico de resonancia por encima de 0 dB y, si no se contara, el
+        // headroom automático no lo compensaría y podría clipear. Un filtro sin
+        // resonancia simplemente aporta ~0 dB y no cambia el resultado.
         val contributing = bands.filter {
-            it.isGainBand && it.gainDb.isFinite() && abs(it.gainDb) >= 0.05f
+            if (it.isGainBand) it.gainDb.isFinite() && abs(it.gainDb) >= 0.05f else true
         }
         if (contributing.isEmpty()) return 0.0
         var peak = -120.0

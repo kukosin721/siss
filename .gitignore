@@ -16,3 +16,6 @@ local.properties
 # Binarios de los arneses en host
 tools/flac-tests/build/
 tools/native-tests/build/
+
+# APK bajado del build de CI
+/artifacts/
