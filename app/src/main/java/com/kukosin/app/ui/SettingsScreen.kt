@@ -227,6 +227,8 @@ internal fun FullScreenSettingsScreen(
     onSelectReplayGainPreamp: (Int) -> Unit,
     onExportBackup: () -> Unit,
     onImportBackup: () -> Unit,
+    showSpectrum: Boolean,
+    onToggleSpectrum: () -> Unit,
     decoder: String,
     onSelectDecoder: (String) -> Unit,
     usbPermissionGranted: Boolean,
@@ -508,6 +510,37 @@ internal fun FullScreenSettingsScreen(
                                         message,
                                         style = MaterialTheme.typography.bodySmall,
                                         color = Color(0xFFFF6B6B),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        Text("Visualizer", style = MaterialTheme.typography.labelLarge, color = Gold, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(6.dp))
+                        Surface(
+                            color = InkSoft,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Spectrum over the artwork", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Cream)
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            "Analyzes the audio that is already playing and draws 32 bars on top of " +
+                                                "the cover. It costs one FFT every four buffers; with it off the analysis " +
+                                                "stage does nothing at all.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = CreamMuted,
+                                        )
+                                    }
+                                    Spacer(Modifier.width(12.dp))
+                                    Switch(
+                                        checked = showSpectrum,
+                                        onCheckedChange = { hapticTick(); onToggleSpectrum() },
                                     )
                                 }
                             }

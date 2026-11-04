@@ -24,6 +24,7 @@ import androidx.media3.session.MediaSessionService
 import com.kukosin.app.audio.AudioEngineStatus
 import com.kukosin.app.data.LibraryInsights
 import com.kukosin.app.data.analysis.EmbeddedMetadata
+import com.kukosin.app.widget.WidgetBridge
 import com.kukosin.app.data.ytm.YtmService
 import com.kukosin.app.data.ytm.describeYtmError
 import kotlinx.coroutines.CoroutineScope
@@ -119,6 +120,39 @@ class PlaybackService : MediaSessionService() {
                 // reanudar no suene bajito para siempre.
                 PlaybackGain.snapTo(1f)
             }
+        }
+    }
+
+    // ── Estado para el widget y el tile ───────────────────────────────────────
+    //
+    // Se publica en cada cambio de metadatos y de reproducción. Es la única fuente: el
+    // widget y el botón de ajustes rápidos leen de acá (vía preferencias), así que no
+    // pueden mostrar algo distinto de lo que está sonando.
+    private val widgetListener = object : Player.Listener {
+        override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) {
+            publishWidgetState()
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            publishWidgetState()
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            publishWidgetState()
+        }
+    }
+
+    private fun publishWidgetState() {
+        val p = player ?: return
+        val metadata = p.currentMediaItem?.mediaMetadata
+        runCatching {
+            WidgetBridge.update(
+                context = this,
+                title = metadata?.title?.toString() ?: p.currentMediaItem?.localConfiguration?.uri?.lastPathSegment,
+                artist = metadata?.artist?.toString() ?: metadata?.albumArtist?.toString(),
+                artUri = metadata?.artworkUri,
+                isPlaying = p.isPlaying,
+            )
         }
     }
 
@@ -369,6 +403,7 @@ class PlaybackService : MediaSessionService() {
         newPlayer.addListener(prefetchListener)
         newPlayer.addListener(playbackCountListener)
         newPlayer.addListener(gainListener)
+        newPlayer.addListener(widgetListener)
         // El reproductor nuevo arranca neutro: si venía de una pista con ReplayGain, el
         // factor viejo no debe aplicarse a la primera muestra del nuevo sink.
         PlaybackGain.reset()

@@ -182,6 +182,43 @@ El EQ y el análisis automático ya venían apagados por su cuenta.
   exportar se escribe `#EXTM3U` + `#EXTINF:duración,Artista - Título` + ruta del archivo,
   que es lo que leen Poweramp, Musicolet y VLC.
 
+## 11. Transiciones entre pistas y volumen parejo
+
+- **Crossfade**: al cambiar de pista el tema que termina baja y el que empieza sube. Se
+  elige en Ajustes → *Track Transitions & Volume* (Off, 0.5 s a 8 s; por defecto 2 s). El
+  fundido se calcula por reloj dentro de la cadena de audio, así que no depende del tamaño
+  del buffer ni reinicia el stream. Con *Off* vuelve el corte seco (disco en vivo, DJ mix).
+- **Gapless**: los discos pensados para escucharse de corrido siguen pegados; el fundido
+  sólo actúa cuando hay salto real entre pistas.
+- **ReplayGain**: lee `REPLAYGAIN_TRACK_GAIN` / `REPLAYGAIN_ALBUM_GAIN` de los archivos y
+  nivela el volumen (Off / Track / Album, más pre-ganancia de -6 a +6 dB). Las etiquetas se
+  leen en segundo plano y quedan cacheadas por archivo; los temas sin etiqueta no se tocan.
+  El valor se recorta entre -24 y +12 dB: una etiqueta mal escrita no puede saturar ni
+  dejar el tema mudo.
+- Las dos etapas viven en `GainAudioProcessor`, **antes** del ecualizador. Cuando no hay
+  nada configurado copian los bytes sin tocarlos, igual que el EQ en bypass.
+
+## 12. Respaldo y restauración
+
+Un solo archivo JSON (Ajustes → *Backup*) con playlists, favoritos, contadores de
+reproducción, ecualizador y ajustes de audio e interfaz. Restaurar es **aditivo**: nunca
+borra nada y, si una playlist ya existe con el mismo nombre, sólo le agrega las canciones
+que le faltaban. Sirve para cambiar de teléfono sin perder meses de uso.
+
+## 13. Widget y botón de ajustes rápidos
+
+- **Widget** de 4×1: carátula, título, artista y play/pausa/anterior/siguiente. Los botones
+  despachan eventos de media a la sesión activa, así que funcionan aunque la app esté
+  cerrada o el proceso se haya recreado.
+- **Tile** en los ajustes rápidos: con algo cargado alterna play/pausa; sin nada, abre la
+  app. Muestra el título como subtítulo y se pinta activo cuando suena.
+
+## 14. Visualizador de espectro
+
+32 barras sobre la carátula, alimentadas por el audio real que pasa por la cadena (FFT de
+512 puntos, ventana de Hann, reparto logarítmico y caída suave). Se apaga en Ajustes →
+*Visualizer*; apagado, la etapa de análisis no decodifica nada.
+
 ## Cómo verificar
 
 No hay JDK/Android SDK en este entorno, así que no se pudo compilar acá. En una máquina

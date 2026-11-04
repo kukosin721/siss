@@ -1454,6 +1454,16 @@ internal fun PlayerMorphingArtwork(
                 .fillMaxSize()
                 .then(if (blur > 0.2.dp) Modifier.blur(blur, edgeTreatment = BlurredEdgeTreatment.Rectangle) else Modifier),
         )
+        if (UiSettingsManager.current().showSpectrum && lyricsProgress < 0.15f) {
+            SpectrumBars(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(start = 18.dp, end = 18.dp, bottom = 16.dp)
+                    .height(64.dp)
+                    .graphicsLayer { alpha = (1f - lyricsProgress * 4f).coerceIn(0f, 1f) },
+            )
+        }
         overlay()
     }
 }

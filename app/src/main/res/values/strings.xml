@@ -1,3 +1,8 @@
 <resources>
     <string name="app_name">Kukosin</string>
+    <string name="widget_nothing_playing">Nothing playing</string>
+    <string name="widget_play_pause">Play or pause</string>
+    <string name="widget_next">Next song</string>
+    <string name="widget_previous">Previous song</string>
+    <string name="tile_label">Kukosin</string>
 </resources>

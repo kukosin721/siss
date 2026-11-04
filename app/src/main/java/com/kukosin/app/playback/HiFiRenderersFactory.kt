@@ -55,7 +55,8 @@ class HiFiRenderersFactory(context: Context) : NextRenderersFactory(context) {
         // Dos etapas: primero la ganancia (fundidos entre pistas + ReplayGain, inerte si
         // ambos están apagados) y después el ecualizador. Las dos copian los bytes tal
         // cual cuando no hay nada que hacer, así que la ruta sigue siendo bit-perfect.
-        val processors: Array<AudioProcessor> = arrayOf(GainAudioProcessor(), EqAudioProcessor())
+        val processors: Array<AudioProcessor> =
+            arrayOf(GainAudioProcessor(), EqAudioProcessor(), SpectrumAudioProcessor())
         val builder = DefaultAudioSink.Builder(context)
             .setEnableFloatOutput(false)
             .setAudioProcessors(processors)
