@@ -56,7 +56,27 @@ data class AudioConfig(
     val volumeCurve: Int = 1,
     /** Vaciado del motor al cambiar de pista sin esperar las transiciones del HAL. */
     val fastTransitions: Boolean = true,
+    /**
+     * Fundido de salida/entrada al cambiar de pista, en ms. `0` lo apaga y deja el corte
+     * seco (lo que quiere un disco en vivo o un DJ mix). Se aplica en la cadena de audio,
+     * así que no reconstruye el reproductor al cambiarlo.
+     */
+    val crossfadeMs: Int = DEFAULT_CROSSFADE_MS,
+    /**
+     * ReplayGain: `0` apagado, `1` por pista, `2` por álbum. Con etiquetas ausentes no
+     * hace nada; con etiquetas presentes nivela el volumen entre discos.
+     */
+    val replayGainMode: Int = 0,
+    /** Pre-ganancia en dB sumada a la etiqueta (para discos que quedan bajos igual). */
+    val replayGainPreampDb: Int = 0,
 ) {
+    val replayGainLabel: String
+        get() = when (replayGainMode) {
+            1 -> "Track"
+            2 -> "Album"
+            else -> "Off"
+        }
+
     /**
      * Sólo lo que obliga a reconstruir el ExoPlayer. Cambiar el aspecto de la cola
      * no debe cortar la reproducción.
@@ -66,6 +86,15 @@ data class AudioConfig(
 
     companion object {
         val BUFFER_OPTIONS = listOf(100, 250, 500, 1000)
+
+        /** 2 s: se nota al saltar de pista pero no alarga la escucha de un disco entero. */
+        const val DEFAULT_CROSSFADE_MS = 2000
+
+        /** Opciones del selector de fundido (ms). `0` = corte seco / gapless puro. */
+        val CROSSFADE_OPTIONS = listOf(0, 500, 1000, 2000, 3000, 5000, 8000)
+
+        /** Opciones de pre-ganancia (dB). */
+        val PREAMP_OPTIONS = listOf(-6, -3, 0, 3, 6)
     }
 }
 
@@ -124,6 +153,9 @@ object AudioSettingsManager {
             prerollMs = p.getInt("preroll_ms", -1),
             volumeCurve = p.getInt("volume_curve", 1),
             fastTransitions = p.getBoolean("fast_transitions", true),
+            crossfadeMs = p.getInt("crossfade_ms", AudioConfig.DEFAULT_CROSSFADE_MS).coerceIn(0, 15000),
+            replayGainMode = p.getInt("replay_gain_mode", 0).coerceIn(0, 2),
+            replayGainPreampDb = p.getInt("replay_gain_preamp_db", 0).coerceIn(-12, 12),
         )
     }
 
@@ -204,5 +236,26 @@ object AudioSettingsManager {
     fun setQueueShowHistory(show: Boolean) {
         prefs?.edit()?.putBoolean("queue_show_history", show)?.apply()
         state.value = state.value.copy(queueShowHistory = show)
+    }
+
+    fun setCrossfadeMs(ms: Int) {
+        val value = ms.coerceIn(0, 15000)
+        prefs?.edit()?.putInt("crossfade_ms", value)?.apply()
+        state.value = state.value.copy(crossfadeMs = value)
+        // Cambiar el ajuste mientras suena no debe dejar el volumen a mitad de rampa.
+        PlaybackGain.snapTo(1f)
+    }
+
+    fun setReplayGainMode(mode: Int) {
+        val value = mode.coerceIn(0, 2)
+        prefs?.edit()?.putInt("replay_gain_mode", value)?.apply()
+        state.value = state.value.copy(replayGainMode = value)
+        if (value == 0) PlaybackGain.setReplayGainDb(0f)
+    }
+
+    fun setReplayGainPreamp(db: Int) {
+        val value = db.coerceIn(-12, 12)
+        prefs?.edit()?.putInt("replay_gain_preamp_db", value)?.apply()
+        state.value = state.value.copy(replayGainPreampDb = value)
     }
 }

@@ -23,6 +23,7 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.kukosin.app.audio.AudioEngineStatus
 import com.kukosin.app.data.LibraryInsights
+import com.kukosin.app.data.analysis.EmbeddedMetadata
 import com.kukosin.app.data.ytm.YtmService
 import com.kukosin.app.data.ytm.describeYtmError
 import kotlinx.coroutines.CoroutineScope
@@ -40,6 +41,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import java.io.IOException
 
 @UnstableApi
@@ -88,6 +91,111 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    // ── Fundidos entre pistas + ReplayGain ────────────────────────────────────
+    //
+    // El fundido de salida lo arma un vigilante que mira cuánto falta para el final; el de
+    // entrada lo arma la transición. Como el segundo llega recién cuando ExoPlayer cambió
+    // de ítem, `fadeOutArmed` evita que el vigilante vuelva a armar la salida en el nuevo
+    // tema (lo que dejaría el volumen bajando para siempre).
+    @Volatile private var fadeOutArmed = false
+
+    private val gainListener = object : Player.Listener {
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            fadeOutArmed = false
+            val config = AudioSettingsManager.configState.value
+            if (config.crossfadeMs > 0) {
+                // Arranca en cero: la primera muestra del tema nuevo no chasquea.
+                PlaybackGain.snapTo(0f)
+                PlaybackGain.fadeIn(minOf(config.crossfadeMs, 1500))
+            } else {
+                PlaybackGain.snapTo(1f)
+            }
+            applyReplayGain(mediaItem)
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (!isPlaying) {
+                // Pausa a mitad de un fundido: se restaura la ganancia para que al
+                // reanudar no suene bajito para siempre.
+                PlaybackGain.snapTo(1f)
+            }
+        }
+    }
+
+    private fun startFadeWatchdog() {
+        serviceScope.launch {
+            while (isActive) {
+                val p = player
+                val config = AudioSettingsManager.configState.value
+                if (p != null && p.isPlaying && config.crossfadeMs > 0 && !fadeOutArmed) {
+                    val duration = p.duration
+                    val fade = config.crossfadeMs.toLong()
+                    if (duration != C.TIME_UNSET && duration > fade * 2 && p.hasNextMediaItem()) {
+                        val remaining = duration - p.currentPosition
+                        if (remaining in 1..fade) {
+                            fadeOutArmed = true
+                            PlaybackGain.fadeOut(config.crossfadeMs)
+                        }
+                    }
+                }
+                delay(200)
+            }
+        }
+    }
+
+    private val replayGainCache = HashMap<String, Float>()
+
+    /**
+     * Aplica la etiqueta ReplayGain del tema actual.
+     *
+     * La lectura de etiquetas abre el archivo, así que nunca ocurre en el hilo de audio ni
+     * en el de la UI: se hace en IO y el resultado queda cacheado por URI + modo. Mientras
+     * tanto suena con la pre-ganancia sola, que es un cambio de volumen mínimo y sólo la
+     * primera vez que se reproduce ese archivo.
+     */
+    private fun applyReplayGain(item: MediaItem?) {
+        val config = AudioSettingsManager.configState.value
+        if (config.replayGainMode == 0) {
+            PlaybackGain.setReplayGainDb(0f)
+            return
+        }
+        val preamp = config.replayGainPreampDb.toFloat()
+        val uri = item?.localConfiguration?.uri
+        if (uri == null) {
+            PlaybackGain.setReplayGainDb(preamp)
+            return
+        }
+        val key = "${config.replayGainMode}|$uri"
+        val cached = synchronized(replayGainCache) { replayGainCache[key] }
+        if (cached != null) {
+            PlaybackGain.setReplayGainDb(cached + preamp)
+            return
+        }
+        PlaybackGain.setReplayGainDb(preamp)
+        val album = config.replayGainMode == 2
+        serviceScope.launch(Dispatchers.IO) {
+            val gain = readReplayGainDb(uri, album) ?: return@launch
+            synchronized(replayGainCache) { replayGainCache[key] = gain }
+            withContext(Dispatchers.Main) {
+                val current = AudioSettingsManager.configState.value
+                val currentUri = player?.currentMediaItem?.localConfiguration?.uri
+                if (current.replayGainMode != 0 && currentUri == uri) {
+                    PlaybackGain.setReplayGainDb(gain + current.replayGainPreampDb)
+                }
+            }
+        }
+    }
+
+    private fun readReplayGainDb(uri: Uri, album: Boolean): Float? {
+        val snapshot = runCatching {
+            EmbeddedMetadata.extract(this, uri, uri.path ?: "")
+        }.getOrNull() ?: return null
+        val label = if (album) "ReplayGain Album" else "ReplayGain Track"
+        val raw = snapshot.fields.firstOrNull { it.first == label }?.second ?: return null
+        val number = Regex("[-+]?\\d+([.,]\\d+)?").find(raw)?.value ?: return null
+        return number.replace(',', '.').toFloatOrNull()
+    }
+
     override fun onCreate() {
         super.onCreate()
         setMediaNotificationProvider(DefaultMediaNotificationProvider(this))
@@ -101,6 +209,7 @@ class PlaybackService : MediaSessionService() {
         com.kukosin.app.eq.EqManager.init(this)
         startRecreateWorker()
         recreatePlayer()
+        startFadeWatchdog()
 
         // Sólo se reconstruye el player si cambió algo que afecta al AUDIO. Antes se
         // recreaba con cualquier ajuste (incluso el aspecto de la cola) y eso cortaba la
@@ -259,6 +368,11 @@ class PlaybackService : MediaSessionService() {
         AudioRoute.attach(this, newPlayer)
         newPlayer.addListener(prefetchListener)
         newPlayer.addListener(playbackCountListener)
+        newPlayer.addListener(gainListener)
+        // El reproductor nuevo arranca neutro: si venía de una pista con ReplayGain, el
+        // factor viejo no debe aplicarse a la primera muestra del nuevo sink.
+        PlaybackGain.reset()
+        newPlayer.currentMediaItem?.let { applyReplayGain(it) }
         newPlayer.addListener(audioErrorListener)
 
         // La sesión nueva se crea antes de tocar la vieja. Si el builder falla, el

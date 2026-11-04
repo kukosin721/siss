@@ -324,6 +324,57 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
         }
     }
 
+    // Exportar un respaldo: JSON con playlists, favoritos, contadores, EQ y ajustes.
+    val backupExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(com.kukosin.app.data.Backup.MIME),
+    ) { uri ->
+        if (uri != null) {
+            val json = runCatching { com.kukosin.app.data.Backup.export(context) }.getOrNull()
+            val written = if (json == null) {
+                false
+            } else {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { stream ->
+                        stream.write(json.toByteArray())
+                    } != null
+                }.getOrDefault(false)
+            }
+            userMessage = if (written) "Backup saved" else "Could not write the backup"
+        }
+    }
+
+    // Restaurar: se lee el archivo y se aplica sin borrar nada de lo que ya hay.
+    val backupImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            val text = runCatching {
+                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+            }.getOrNull()
+            if (text.isNullOrBlank()) {
+                userMessage = "Could not read that file"
+            } else {
+                val result = runCatching {
+                    com.kukosin.app.data.Backup.restore(context, text)
+                }.getOrNull()
+                userMessage = when {
+                    result == null -> "That file is not a Kukosin backup"
+                    else -> buildString {
+                        append("Restored ")
+                        append(result.playlists)
+                        append(if (result.playlists == 1) " playlist" else " playlists")
+                        append(", ")
+                        append(result.favorites)
+                        append(if (result.favorites == 1) " favorite" else " favorites")
+                        if (result.eq) append(", EQ")
+                        if (result.settings > 0) append(", ${result.settings} settings")
+                        if (result.skipped > 0) append(" · ${result.skipped} already existed")
+                    }
+                }
+            }
+        }
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
@@ -1294,6 +1345,14 @@ fun PlayerApp(viewModel: LibraryViewModel = viewModel()) {
             onSelectContinuity = viewModel::setContinuity,
             volumeCurve = audioConfig.volumeCurve,
             onSelectVolumeCurve = viewModel::setVolumeCurve,
+            crossfadeMs = audioConfig.crossfadeMs,
+            onSelectCrossfadeMs = viewModel::setCrossfadeMs,
+            replayGainMode = audioConfig.replayGainMode,
+            onSelectReplayGainMode = viewModel::setReplayGainMode,
+            replayGainPreampDb = audioConfig.replayGainPreampDb,
+            onSelectReplayGainPreamp = viewModel::setReplayGainPreamp,
+            onExportBackup = { backupExportLauncher.launch(com.kukosin.app.data.Backup.suggestedName()) },
+            onImportBackup = { backupImportLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
             decoder = audioConfig.decoder,
             onSelectDecoder = { decoder -> viewModel.setDecoder(decoder) },
             usbPermissionGranted = UsbDacManager.current.value.hasPermission,

@@ -385,6 +385,18 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         com.kukosin.app.playback.AudioSettingsManager.setContinuity(preset)
     }
 
+    fun setCrossfadeMs(ms: Int) {
+        com.kukosin.app.playback.AudioSettingsManager.setCrossfadeMs(ms)
+    }
+
+    fun setReplayGainMode(mode: Int) {
+        com.kukosin.app.playback.AudioSettingsManager.setReplayGainMode(mode)
+    }
+
+    fun setReplayGainPreamp(db: Int) {
+        com.kukosin.app.playback.AudioSettingsManager.setReplayGainPreamp(db)
+    }
+
     fun setVolumeCurve(curve: Int) {
         com.kukosin.app.playback.AudioSettingsManager.setVolumeCurve(curve)
     }

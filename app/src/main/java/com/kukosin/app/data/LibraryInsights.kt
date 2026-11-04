@@ -51,6 +51,30 @@ object LibraryInsights {
         preferences.edit().putStringSet("uris", snapshot).apply()
     }
 
+    /** Agrega un favorito sin alternar (lo usa la restauración de un respaldo). */
+    @Synchronized
+    fun restoreFavorite(uri: String) {
+        val preferences = favoritesPreferences ?: return
+        val updated = _favorites.value + uri
+        _favorites.value = updated
+        preferences.edit().putStringSet("uris", updated).apply()
+    }
+
+    /**
+     * Deja el contador en [count] si es mayor al actual. Devuelve `true` si cambió algo:
+     * restaurar dos veces el mismo respaldo no infla las estadísticas.
+     */
+    @Synchronized
+    fun restorePlayCount(uri: String, count: Int): Boolean {
+        val preferences = countsPreferences ?: return false
+        val current = _playCounts.value[uri] ?: 0
+        if (count <= current) return false
+        val updated = _playCounts.value + (uri to count)
+        _playCounts.value = updated
+        preferences.edit().putInt(uri, count).apply()
+        return true
+    }
+
     /**
      * URIs de las pistas más probables de abrir primero: favoritos y las más escuchadas.
      *
