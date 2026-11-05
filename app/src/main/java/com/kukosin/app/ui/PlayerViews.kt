@@ -943,6 +943,25 @@ internal fun NowPlayingSheet(
                             modifier = Modifier.fillMaxWidth(),
                         )
 
+                        // Ruta de señal, abajo de la onda y siempre visible: qué está
+                        // sonando (dispositivo), con cuántos bits y a qué frecuencia.
+                        // Antes era un botón redondo encima de la carátula que no decía
+                        // nada hasta abrirlo.
+                        SignalPathChip(
+                            deviceName = output.name,
+                            isDac = output.isDac,
+                            bitDepth = track?.bitDepth ?: 0,
+                            sampleRate = track?.sampleRate ?: 0,
+                            enabled = interactiveEnabled,
+                            onClick = onOpenSignalPath,
+                            modifier = Modifier
+                                .padding(top = 6.dp)
+                                .graphicsLayer {
+                                    val lp = lyricsProgress.coerceIn(0f, 1f)
+                                    alpha = (1f - lp * 1.6f).coerceIn(0f, 1f)
+                                },
+                        )
+
                     }
                 }
 
@@ -1070,9 +1089,6 @@ internal fun NowPlayingSheet(
                             enabled = interactiveEnabled,
                             repeatMode = repeatMode,
                             shuffleOn = shuffleOn,
-                            isDac = output.isDac,
-                            onOpenEqualizer = onOpenEqualizerShortcut,
-                            onOpenSignalPath = onOpenSignalPath,
                             onToggleRepeat = {
                                 val player = controller
                                 if (interactiveEnabled && player != null) {
@@ -1110,9 +1126,6 @@ private fun PlayerArtworkActions(
     enabled: Boolean,
     repeatMode: Int,
     shuffleOn: Boolean,
-    isDac: Boolean,
-    onOpenEqualizer: () -> Unit,
-    onOpenSignalPath: () -> Unit,
     onToggleRepeat: () -> Unit,
     onToggleShuffle: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1125,54 +1138,99 @@ private fun PlayerArtworkActions(
         modifier = modifier
             .graphicsLayer { alpha = actionsAlpha.value }
             .fillMaxWidth()
+            // Sólo queda la franja inferior: el ecualizador se abre desde la barra de
+            // accesos y la ruta de señal tiene su propio chip debajo de la onda, así que
+            // acá no hace falta oscurecer media carátula.
             .background(
                 Brush.verticalGradient(
-                    listOf(Color.Transparent, Ink.copy(alpha = 0.72f)),
+                    listOf(Color.Transparent, Ink.copy(alpha = 0.55f)),
                 ),
             )
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                PlayerRoundAction(
-                    icon = Icons.Rounded.GraphicEq,
-                    contentDescription = "Equalizer",
-                    enabled = enabled,
-                    onClick = onOpenEqualizer,
-                )
-                Spacer(Modifier.width(8.dp))
-                PlayerRoundAction(
-                    icon = if (isDac) Icons.Rounded.Usb else Icons.Rounded.Headphones,
-                    contentDescription = "Signal path",
-                    enabled = enabled,
-                    onClick = onOpenSignalPath,
-                )
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                PlayerRoundAction(
-                    icon = if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
-                    contentDescription = when (repeatMode) {
-                        Player.REPEAT_MODE_ONE -> "Repeat one song"
-                        Player.REPEAT_MODE_ALL -> "Repeat queue"
-                        else -> "Repeat off"
-                    },
-                    enabled = enabled,
-                    active = repeatMode != Player.REPEAT_MODE_OFF,
-                    onClick = onToggleRepeat,
-                )
-                Spacer(Modifier.width(8.dp))
-                PlayerRoundAction(
-                    icon = Icons.Rounded.Shuffle,
-                    contentDescription = if (shuffleOn) "Disable shuffle" else "Enable shuffle",
-                    enabled = enabled,
-                    active = shuffleOn,
-                    onClick = onToggleShuffle,
-                )
-            }
+            PlayerRoundAction(
+                icon = if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
+                contentDescription = when (repeatMode) {
+                    Player.REPEAT_MODE_ONE -> "Repeat one song"
+                    Player.REPEAT_MODE_ALL -> "Repeat queue"
+                    else -> "Repeat off"
+                },
+                enabled = enabled,
+                active = repeatMode != Player.REPEAT_MODE_OFF,
+                onClick = onToggleRepeat,
+            )
+            Spacer(Modifier.width(28.dp))
+            PlayerRoundAction(
+                icon = Icons.Rounded.Shuffle,
+                contentDescription = if (shuffleOn) "Disable shuffle" else "Enable shuffle",
+                enabled = enabled,
+                active = shuffleOn,
+                onClick = onToggleShuffle,
+            )
+        }
+    }
+}
+
+/**
+ * Chip de la ruta de señal: `dispositivo · bits · kHz`, y abre el detalle al tocarlo.
+ *
+ * Los datos salen de la pista actual (`bitDepth` / `sampleRate`, que es lo que el decoder
+ * entrega de verdad) y del dispositivo activo ([com.kukosin.app.playback.OutputDevice]).
+ * Cuando el archivo no declara formato se muestra `—` en vez de inventar 16/44.1.
+ */
+@Composable
+private fun SignalPathChip(
+    deviceName: String,
+    isDac: Boolean,
+    bitDepth: Int,
+    sampleRate: Int,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val format = buildString {
+        append(if (bitDepth > 0) "$bitDepth-bit" else "—")
+        if (sampleRate > 0) {
+            append(" · ")
+            append(
+                if (sampleRate % 1000 == 0) "${sampleRate / 1000} kHz"
+                else "%.1f kHz".format(sampleRate / 1000.0),
+            )
+        }
+    }
+    Surface(
+        color = Ink.copy(alpha = 0.55f),
+        shape = RoundedCornerShape(50),
+        border = BorderStroke(1.dp, Gold.copy(alpha = 0.22f)),
+        modifier = modifier.clickable(enabled = enabled) {
+            hapticTick()
+            onClick()
+        },
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = if (isDac) Icons.Rounded.Usb else Icons.Rounded.Headphones,
+                contentDescription = null,
+                tint = Gold.copy(alpha = 0.9f),
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = "$deviceName · $format",
+                style = MaterialTheme.typography.labelSmall,
+                color = CreamMuted,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

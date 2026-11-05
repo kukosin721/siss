@@ -439,98 +439,43 @@ fun KukosinWaveformSlider(
  * al soltar por encima del umbral se abre la cola (el blur de fondo lo maneja
  * `PlayerApp`). Un toque también la abre, para que se descubra sin adivinar el gesto.
  */
+/**
+ * Franja de gesto para abrir la cola.
+ *
+ * No se dibuja nada: la cola se abre **sólo** con un arrastre hacia arriba desde abajo de
+ * las barras (antes había una píldora "QUEUE" que además se abría con un toque, y eso
+ * competía visualmente con la onda). La zona táctil sigue siendo todo el ancho de la
+ * tarjeta para que el gesto no exija puntería, y se dispara apenas se pasa el umbral —
+ * esperar al "dedo arriba" hacía que se sintiera pesado.
+ */
 @Composable
 private fun QueuePullHandle(
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val density = LocalDensity.current
-    val maxPullPx = with(density) { 22.dp.toPx() }
-    val thresholdPx = with(density) { 14.dp.toPx() }
+    val thresholdPx = with(LocalDensity.current) { 12.dp.toPx() }
     var pullPx by remember { mutableFloatStateOf(0f) }
-    var dragging by remember { mutableStateOf(false) }
-    val pullSpec: AnimationSpec<Float> = if (dragging) {
-        snap()
-    } else {
-        Motion.snappy(stiffness = 520f, dampingRatio = 0.92f)
-    }
-    val animatedPull by animateFloatAsState(
-        targetValue = if (dragging) pullPx.coerceIn(-maxPullPx, 0f) else 0f,
-        animationSpec = pullSpec,
-        label = "queuePullNudge",
-    )
-
     Box(
         modifier = modifier
-            // Zona táctil a todo lo ancho de la tarjeta: el gesto funciona en cualquier
-            // punto de la franja bajo las barras, no solo sobre la píldora.
             .fillMaxWidth()
-            .height(44.dp)
-            .semantics {
-                contentDescription = "Open queue"
-                role = Role.Button
-                onClick(label = "Open queue") {
-                    onOpen()
-                    true
-                }
-            }
+            .height(40.dp)
             .pointerInput(onOpen) {
                 detectVerticalDragGestures(
-                    onDragStart = {
-                        dragging = true
-                        pullPx = 0f
-                    },
+                    onDragStart = { pullPx = 0f },
                     onVerticalDrag = { change, dragAmount ->
                         change.consume()
-                        pullPx = (pullPx + dragAmount).coerceIn(-maxPullPx, 0f)
+                        pullPx += dragAmount
+                        if (pullPx <= -thresholdPx) {
+                            // Un solo disparo por gesto.
+                            pullPx = 0f
+                            onOpen()
+                        }
                     },
-                    onDragEnd = {
-                        val trigger = pullPx <= -thresholdPx
-                        dragging = false
-                        pullPx = 0f
-                        if (trigger) onOpen()
-                    },
-                    onDragCancel = {
-                        dragging = false
-                        pullPx = 0f
-                    },
+                    onDragEnd = { pullPx = 0f },
+                    onDragCancel = { pullPx = 0f },
                 )
-            }
-            .pointerInput(onOpen) {
-                detectTapGestures { onOpen() }
             },
-        contentAlignment = Alignment.Center,
-    ) {
-        Row(
-            modifier = Modifier
-                .widthIn(max = 176.dp)
-                .graphicsLayer {
-                    translationY = animatedPull * 0.55f
-                    alpha = (0.72f + 0.28f * (animatedPull / -maxPullPx).coerceIn(0f, 1f))
-                        .coerceIn(0f, 1f)
-                }
-                .clip(RoundedCornerShape(50))
-                .background(Ink.copy(alpha = 0.62f))
-                .border(1.dp, Gold.copy(alpha = 0.20f), RoundedCornerShape(50))
-                .padding(horizontal = 10.dp, vertical = 3.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.KeyboardArrowUp,
-                contentDescription = null,
-                tint = Gold.copy(alpha = 0.82f),
-                modifier = Modifier.size(15.dp),
-            )
-            Spacer(Modifier.width(3.dp))
-            Text(
-                "QUEUE",
-                color = Gold.copy(alpha = 0.82f),
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.8.sp,
-            )
-        }
-    }
+    )
 }
 
 // ────────────────────────── Helpers ─────────────────────────────────────

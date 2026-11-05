@@ -219,6 +219,19 @@ que le faltaban. Sirve para cambiar de teléfono sin perder meses de uso.
 512 puntos, ventana de Hann, reparto logarítmico y caída suave). Se apaga en Ajustes →
 *Visualizer*; apagado, la etapa de análisis no decodifica nada.
 
+## 15. Controles del reproductor, sin ruido encima de la portada
+
+- **La carátula quedó limpia**: se fue el botón redondo del ecualizador (se abre desde la
+  barra de accesos, que es donde ya estaba) y también el de la ruta de señal.
+- **Ruta de señal abajo de la onda**, como chip permanente: `dispositivo · bits · kHz`
+  (por ejemplo `Pixel 8 · 24-bit · 96 kHz`), leído de la pista en reproducción y del
+  dispositivo activo. Tocarlo abre el detalle de la ruta, igual que antes.
+- **Repetir y aleatorio** quedaron centrados en la franja inferior de la portada, en vez de
+  repartidos en las esquinas con los otros dos botones.
+- **La cola ya no tiene botón**: se abre solamente con el gesto hacia arriba desde la
+  franja debajo de las barras. La zona táctil sigue siendo todo el ancho de la tarjeta y
+  dispara apenas se pasa el umbral, pero no se dibuja ninguna píldora "QUEUE".
+
 ## Cómo verificar
 
 No hay JDK/Android SDK en este entorno, así que no se pudo compilar acá. En una máquina
