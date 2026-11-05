@@ -1,0 +1,19 @@
++ mkdir -p /home/runner/.android
++ git fetch origin ci-apk
+From https://github.com/kukosin721/siss
+ * branch            ci-apk     -> FETCH_HEAD
+ * [new branch]      ci-apk     -> origin/ci-apk
++ git cat-file -e FETCH_HEAD:debug.keystore
++ git show FETCH_HEAD:debug.keystore
++ echo 'keystore restaurado de ci-apk'
+keystore restaurado de ci-apk
++ '[' '!' -s /home/runner/.android/debug.keystore ']'
++ ls -l /home/runner/.android/
+total 4
+-rw-r--r-- 1 runner runner 2150 Nov  5 01:12 debug.keystore
++ which keytool
+/opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/21.0.13-9/x64/bin/keytool
++ java -version
+openjdk version "21.0.13" 2026-10-20 LTS
+OpenJDK Runtime Environment Temurin-21.0.13+9 (build 21.0.13+9-LTS)
+OpenJDK 64-Bit Server VM Temurin-21.0.13+9 (build 21.0.13+9-LTS, mixed mode, sharing)

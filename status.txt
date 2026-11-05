@@ -1,0 +1,5 @@
+FAILED
+commit=49f51ef62de89d3cfffc1ff96431fa41cb49390f
+debug=failure (none)
+release=failure (none)
+keystore=stable
